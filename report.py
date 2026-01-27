@@ -73,8 +73,7 @@ class MassReporter:
                         peer=await self.resolve_peer(target_chat),
                         reason=reason,
                         message=description or "",
-                        id=message_ids,
-                        option=b""
+                        id=message_ids
                     )
                 )
 
@@ -87,8 +86,7 @@ class MassReporter:
                         peer=await self.resolve_peer(target_chat),
                         reason=reason,
                         message=description or "",
-                        id=[],
-                        option=b""
+                        id=[]
                     )
                 )
 
