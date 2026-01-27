@@ -30,6 +30,19 @@ def _get_chat_identifier(link):
     trimmed = trimmed.strip("/")
     return trimmed
 
+
+async def _prompt_chat_link(message, user_id):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back", callback_data="back")]
+    ])
+    app.user_states[user_id] = {"step": "awaiting_chat"}
+    await message.edit_text(
+        "🔗 **Send Chat Link** (Channel/Group)\n\n"
+        "Example: `@channelname` or `https://t.me/channelname`\n"
+        "**Private/Public both supported**",
+        reply_markup=keyboard
+    )
+
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     user_id = message.from_user.id
@@ -56,15 +69,11 @@ async def start(client, message):
 async def report_start(client, callback):
     total_sessions = await db.get_total_session_count()
     active_sessions = await db.get_active_session_count()
-    keyboard_rows = []
-    if active_sessions > 0:
-        keyboard_rows.append([InlineKeyboardButton("🚀 Start Report", callback_data="start_report")])
-        keyboard_rows.append([InlineKeyboardButton("🔄 Re-Validate Sessions", callback_data="validate_sessions")])
-    elif total_sessions > 0:
-        keyboard_rows.append([InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")])
-    keyboard_rows.append([InlineKeyboardButton("🔙 Back", callback_data="back")])
-    keyboard = InlineKeyboardMarkup(keyboard_rows)
     if total_sessions == 0:
+        app.user_states[callback.from_user.id] = {"step": "awaiting_sessions"}
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
         message_text = (
             "❌ **startlove DB me koi session nahi mila.**\n\n"
             "📝 **Send Session Strings**\n"
@@ -72,34 +81,43 @@ async def report_start(client, callback):
             "`client1_string`\n"
             "`client2_string`"
         )
+        await callback.message.edit_text(
+            message_text,
+            reply_markup=keyboard
+        )
+        await client.answer_callback_query(callback.id)
+        return
     elif active_sessions > 0:
-        message_text = (
-            f"✅ **{active_sessions} sessions pehle se validate ho chuke hain.**\n\n"
-            "📝 **Send Session Strings**\n"
-            "Send your Pyrogram session strings (one per line)\n"
-            "`client1_string`\n"
-            "`client2_string`\n\n"
-            "Ya **Start Report** pe click karo."
+        await _prompt_chat_link(callback.message, callback.from_user.id)
+        await client.answer_callback_query(callback.id)
+        return
+
+    await callback.message.edit_text("⏳ **Validating sessions...**")
+    reporter = MassReporter()
+    active_count = await reporter.load_sessions()
+    if active_count == 0:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
+        await callback.message.edit_text(
+            "❌ **No active sessions found.**\n\n"
+            "Pehle sessions validate karo.",
+            reply_markup=keyboard
         )
-    else:
-        message_text = (
-            f"✅ **startlove DB se {total_sessions} sessions load ho gaye.**\n\n"
-            "📝 **Send Session Strings**\n"
-            "Send your Pyrogram session strings (one per line)\n"
-            "`client1_string`\n"
-            "`client2_string`\n\n"
-            "Ya **Validate Sessions** pe click karo."
-        )
-    await callback.message.edit_text(
-        message_text,
-        reply_markup=keyboard
-    )
+        await client.answer_callback_query(callback.id)
+        return
+
+    await _prompt_chat_link(callback.message, callback.from_user.id)
     await client.answer_callback_query(callback.id)
 
 @app.on_message(filters.private & ~filters.command("start"))
 async def handle_sessions(client, message):
     user_id = message.from_user.id
     if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
+        return
+    state = app.user_states.get(user_id)
+    if not state or state.get("step") != "awaiting_sessions":
         return
     
     text = message.text
@@ -158,16 +176,7 @@ async def start_report(client, callback):
         )
         await client.answer_callback_query(callback.id)
         return
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
-    app.user_states[callback.from_user.id] = {"step": "awaiting_chat"}
-    await callback.message.edit_text(
-        "🔗 **Send Chat Link** (Channel/Group)\n\n"
-        "Example: `@channelname` or `https://t.me/channelname`\n"
-        "**Private/Public both supported**",
-        reply_markup=keyboard
-    )
+    await _prompt_chat_link(callback.message, callback.from_user.id)
     await client.answer_callback_query(callback.id)
 
 @app.on_message(filters.regex(r"https?://t\.me/|^@|^\+"))
