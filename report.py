@@ -152,29 +152,27 @@ class MassReporter:
         if max_reports is not None:
             clients = clients[:max_reports]
 
-        semaphore = asyncio.Semaphore(3)
         results = {"success": 0, "failed": 0, "total": len(clients)}
         
         async def report_one(client_data):
-            async with semaphore:
-                client = client_data["client"]
-                try:
-                    await client.invoke(
-                        raw.functions.messages.Report(
-                            peer=await client.resolve_peer(target_chat),
-                            reason=reason,
-                            message=description or "",
-                            id=[],
-                            option=b""
-                        )
+            client = client_data["client"]
+            try:
+                await client.invoke(
+                    raw.functions.messages.Report(
+                        peer=await client.resolve_peer(target_chat),
+                        reason=reason,
+                        message=description or "",
+                        id=[],
+                        option=b""
                     )
-                    await asyncio.sleep(1)
-                    return True
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 1)
-                    return False
-                except:
-                    return False
+                )
+                await asyncio.sleep(1)
+                return True
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+                return False
+            except:
+                return False
 
         remaining_clients = clients
         for attempt in range(retries + 1):
