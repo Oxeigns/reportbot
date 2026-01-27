@@ -1,6 +1,6 @@
 from pyrogram import Client, filters, types
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import BOT_TOKEN, OWNER_ID, SUDO_USERS
+from config import BOT_TOKEN, OWNER_ID, SUDO_USERS, API_ID, API_HASH
 from database import db
 from report import MassReporter
 import asyncio
@@ -8,7 +8,15 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-app = Client("mass_report_bot", bot_token=BOT_TOKEN)
+if not API_ID or not API_HASH:
+    raise RuntimeError("API_ID and API_HASH must be set for Pyrogram.")
+
+app = Client(
+    "mass_report_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+)
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
