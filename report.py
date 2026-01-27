@@ -42,6 +42,27 @@ class SessionValidator:
 class MassReporter:
     def __init__(self):
         self.active_clients = []
+        self.per_report_delay = 1.5
+        self.between_clients_delay = 1.0
+        self.between_attempts_delay = 2.0
+        self.retry_delay = 2.0
+        self.floodwait_buffer = 2
+        self.max_retries = 1
+
+    async def _report_with_retries(self, report_call, client_name: str) -> bool:
+        for attempt in range(self.max_retries + 1):
+            try:
+                await report_call()
+                await asyncio.sleep(self.per_report_delay)
+                return True
+            except FloodWait as error:
+                wait_time = error.value + self.floodwait_buffer
+                logger.warning("FloodWait for %s: %ss", client_name, wait_time)
+                await asyncio.sleep(wait_time)
+            except Exception as error:
+                logger.warning("Report failed for %s: %s", client_name, str(error)[:120])
+                await asyncio.sleep(self.retry_delay)
+        return False
     
     @staticmethod
     def _attach_report_helpers(client: Client) -> None:
@@ -189,27 +210,18 @@ class MassReporter:
             "attempt_success": 0,
             "attempt_failed": 0
         }
-        
-        async def report_one(client_data):
-            client = client_data["client"]
-            try:
-                await client.report_chat(target_chat, reason, description=description)
-                await asyncio.sleep(1)
-                return True
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 1)
-                return False
-            except:
-                return False
 
         for attempt in range(1, attempts + 1):
-            tasks = [report_one(c) for c in clients]
-            task_results = await asyncio.gather(*tasks, return_exceptions=True)
-
             success_count = 0
-            for result in task_results:
-                if result is True:
+            for client_data in clients:
+                client = client_data["client"]
+                ok = await self._report_with_retries(
+                    lambda: client.report_chat(target_chat, reason, description=description),
+                    client_data["name"]
+                )
+                if ok:
                     success_count += 1
+                await asyncio.sleep(self.between_clients_delay)
 
             attempt_total = len(clients)
             results["success"] += success_count
@@ -222,6 +234,7 @@ class MassReporter:
 
             if on_progress:
                 await on_progress(attempt, attempts, results)
+            await asyncio.sleep(self.between_attempts_delay)
 
         return results
 
@@ -250,31 +263,22 @@ class MassReporter:
             "attempt_failed": 0
         }
 
-        async def report_one(client_data):
-            client = client_data["client"]
-            try:
-                await client.report_message(
-                    target_chat,
-                    message_ids,
-                    reason,
-                    description=description
-                )
-                await asyncio.sleep(1)
-                return True
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 1)
-                return False
-            except:
-                return False
-
         for attempt in range(1, attempts + 1):
-            tasks = [report_one(c) for c in clients]
-            task_results = await asyncio.gather(*tasks, return_exceptions=True)
-
             success_count = 0
-            for result in task_results:
-                if result is True:
+            for client_data in clients:
+                client = client_data["client"]
+                ok = await self._report_with_retries(
+                    lambda: client.report_message(
+                        target_chat,
+                        message_ids,
+                        reason,
+                        description=description
+                    ),
+                    client_data["name"]
+                )
+                if ok:
                     success_count += 1
+                await asyncio.sleep(self.between_clients_delay)
 
             attempt_total = len(clients)
             results["success"] += success_count
@@ -287,6 +291,7 @@ class MassReporter:
 
             if on_progress:
                 await on_progress(attempt, attempts, results)
+            await asyncio.sleep(self.between_attempts_delay)
 
         return results
 
