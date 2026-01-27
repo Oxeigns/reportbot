@@ -271,7 +271,25 @@ async def report_saved_callback(client, callback: CallbackQuery):
         )
         return
 
+    animation_template = (
+        "🧬 **PREPARING SAVED SESSIONS**\n\n"
+        "⚙️ `{frame}` **{phase}**\n"
+        "📡 Syncing saved sessions for report run\n"
+        "💫 Please wait, warming up..."
+    )
+    stop_event = asyncio.Event()
+    animation_task = asyncio.create_task(
+        animate_message_with_phases(
+            callback.message,
+            animation_template,
+            stop_event,
+            SESSION_VALIDATE_PHASES,
+            1.0
+        )
+    )
     await reporter.validate_all_sessions()
+    stop_event.set()
+    await animation_task
     stats = await db.get_stats()
 
     if stats["active"] < 1:
