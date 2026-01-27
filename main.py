@@ -289,7 +289,7 @@ async def sudo_manager(client, callback):
         )
     else:
         sudos = await db.get_sudos()
-        sudo_list = "\n".join([f"`{sudo['user_id']}` for sudo in sudos])
+        sudo_list = "\n".join([f"`{sudo['user_id']}`" for sudo in sudos])
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]])
         await callback.message.edit_text(
             f"👥 **Sudo Users:**\n\n{sudo_list or 'No sudos'}\n\n"
