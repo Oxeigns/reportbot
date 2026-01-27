@@ -182,7 +182,13 @@ class MassReporter:
 
         clients = list(self.active_clients)
 
-        results = {"success": 0, "failed": 0, "total": 0}
+        results = {
+            "success": 0,
+            "failed": 0,
+            "total": 0,
+            "attempt_success": 0,
+            "attempt_failed": 0
+        }
         
         async def report_one(client_data):
             client = client_data["client"]
@@ -209,6 +215,10 @@ class MassReporter:
             results["success"] += success_count
             results["failed"] += attempt_total - success_count
             results["total"] += attempt_total
+            if success_count == attempt_total:
+                results["attempt_success"] += 1
+            else:
+                results["attempt_failed"] += 1
 
             if on_progress:
                 await on_progress(attempt, attempts, results)
@@ -232,7 +242,13 @@ class MassReporter:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
-        results = {"success": 0, "failed": 0, "total": 0}
+        results = {
+            "success": 0,
+            "failed": 0,
+            "total": 0,
+            "attempt_success": 0,
+            "attempt_failed": 0
+        }
 
         async def report_one(client_data):
             client = client_data["client"]
@@ -264,6 +280,10 @@ class MassReporter:
             results["success"] += success_count
             results["failed"] += attempt_total - success_count
             results["total"] += attempt_total
+            if success_count == attempt_total:
+                results["attempt_success"] += 1
+            else:
+                results["attempt_failed"] += 1
 
             if on_progress:
                 await on_progress(attempt, attempts, results)
