@@ -336,9 +336,11 @@ async def handle_user_input(client, message):
             await status_message.edit_text(
                 "📊 **LIVE PANEL**\n\n"
                 f"🧪 **ATTEMPT:** `{attempt}/{total_attempts}`\n"
-                f"✅ **SUCCESS:** `{results['success']}`\n"
-                f"❌ **FAILED:** `{results['failed']}`\n"
-                f"📈 **TOTAL:** `{results['total']}`\n\n"
+                f"✅ **ATTEMPTS SUCCESS:** `{results['attempt_success']}`\n"
+                f"❌ **ATTEMPTS FAILED:** `{results['attempt_failed']}`\n"
+                f"📈 **REPORTS SUCCESS:** `{results['success']}`\n"
+                f"📉 **REPORTS FAILED:** `{results['failed']}`\n"
+                f"🧾 **REPORTS TOTAL:** `{results['total']}`\n\n"
                 f"🎯 **{chat_id}**",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -366,6 +368,8 @@ async def handle_user_input(client, message):
         text = f"""🎉 **REPORT FINISHED!**
 
 🧪 **ATTEMPTS:** `{attempts}`
+✅ **ATTEMPTS SUCCESS:** `{results['attempt_success']}`
+❌ **ATTEMPTS FAILED:** `{results['attempt_failed']}`
 📊 **TOTAL REPORTS:** `{total_possible}`
 ✅ **SUCCESS:** `{results['success']}`
 ❌ **FAILED:** `{results['failed']}`
