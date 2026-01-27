@@ -202,46 +202,16 @@ class MassReporter:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
-        message_ids: list[int] = []
-
-        results = {
-            "success": 0,
-            "failed": 0,
-            "total": 0,
-            "attempt_success": 0,
-            "attempt_failed": 0
-        }
-
-        for attempt in range(1, attempts + 1):
-            success_count = 0
-            for client_data in clients:
-                client = client_data["client"]
-                ok = await self._report_with_retries(
-                    lambda: client.report_chat(
-                        target_chat,
-                        reason,
-                        description=description
-                    ),
-                    client_data["name"]
-                )
-                if ok:
-                    success_count += 1
-                await asyncio.sleep(self.between_clients_delay)
-
-            attempt_total = len(clients)
-            results["success"] += success_count
-            results["failed"] += attempt_total - success_count
-            results["total"] += attempt_total
-            if success_count == attempt_total:
-                results["attempt_success"] += 1
-            else:
-                results["attempt_failed"] += 1
-
-            if on_progress:
-                await on_progress(attempt, attempts, results)
-            await asyncio.sleep(self.between_attempts_delay)
-
-        return results
+        return await self._run_global_attempts(
+            clients=clients,
+            total_attempts=attempts,
+            report_factory=lambda client: lambda: client.report_chat(
+                target_chat,
+                reason,
+                description=description
+            ),
+            on_progress=on_progress
+        )
 
     async def mass_report_message(
         self,
@@ -260,6 +230,28 @@ class MassReporter:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
+        return await self._run_global_attempts(
+            clients=clients,
+            total_attempts=attempts,
+            report_factory=lambda client: lambda: client.report_message(
+                target_chat,
+                message_ids,
+                reason,
+                description=description
+            ),
+            on_progress=on_progress
+        )
+
+    async def _run_global_attempts(
+        self,
+        clients: list[dict],
+        total_attempts: int,
+        report_factory,
+        on_progress=None
+    ) -> dict:
+        if total_attempts < 1 or not clients:
+            return {"success": 0, "failed": 0, "total": 0, "attempt_success": 0, "attempt_failed": 0}
+
         results = {
             "success": 0,
             "failed": 0,
@@ -267,36 +259,48 @@ class MassReporter:
             "attempt_success": 0,
             "attempt_failed": 0
         }
+        completed_attempts = 0
+        lock = asyncio.Lock()
+        client_index = 0
 
-        for attempt in range(1, attempts + 1):
-            success_count = 0
-            for client_data in clients:
-                client = client_data["client"]
-                ok = await self._report_with_retries(
-                    lambda: client.report_message(
-                        target_chat,
-                        message_ids,
-                        reason,
-                        description=description
-                    ),
-                    client_data["name"]
-                )
+        while completed_attempts < total_attempts:
+            client_data = clients[client_index % len(clients)]
+            client_index += 1
+
+            async with lock:
+                if completed_attempts >= total_attempts:
+                    break
+                current_attempt = completed_attempts + 1
+                remaining = total_attempts - current_attempt
+
+            logger.info(
+                "Reporting with %s (attempt %s/%s, remaining %s)",
+                client_data["name"],
+                current_attempt,
+                total_attempts,
+                remaining
+            )
+
+            client = client_data["client"]
+            report_call = report_factory(client)
+            ok = await self._report_with_retries(report_call, client_data["name"])
+
+            async with lock:
+                completed_attempts += 1
                 if ok:
-                    success_count += 1
-                await asyncio.sleep(self.between_clients_delay)
-
-            attempt_total = len(clients)
-            results["success"] += success_count
-            results["failed"] += attempt_total - success_count
-            results["total"] += attempt_total
-            if success_count == attempt_total:
-                results["attempt_success"] += 1
-            else:
-                results["attempt_failed"] += 1
+                    results["success"] += 1
+                    results["attempt_success"] += 1
+                else:
+                    results["failed"] += 1
+                    results["attempt_failed"] += 1
+                results["total"] += 1
 
             if on_progress:
-                await on_progress(attempt, attempts, results)
-            await asyncio.sleep(self.between_attempts_delay)
+                await on_progress(completed_attempts, total_attempts, results)
+
+            await asyncio.sleep(self.between_clients_delay)
+            if completed_attempts < total_attempts and client_index % len(clients) == 0:
+                await asyncio.sleep(self.between_attempts_delay)
 
         return results
 
