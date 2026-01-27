@@ -44,6 +44,9 @@ class Database:
 
     async def get_total_session_count(self):
         return await self.sessions.count_documents({})
+
+    async def get_active_sessions(self):
+        return await self.sessions.find({"status": "active"}).to_list(length=None)
     
     async def add_sudo(self, user_id):
         await self.sudos.update_one(
