@@ -55,8 +55,12 @@ async def start(client, message):
 @app.on_callback_query(filters.regex("report_start"))
 async def report_start(client, callback):
     total_sessions = await db.get_total_session_count()
+    active_sessions = await db.get_active_session_count()
     keyboard_rows = []
-    if total_sessions > 0:
+    if active_sessions > 0:
+        keyboard_rows.append([InlineKeyboardButton("🚀 Start Report", callback_data="start_report")])
+        keyboard_rows.append([InlineKeyboardButton("🔄 Re-Validate Sessions", callback_data="validate_sessions")])
+    elif total_sessions > 0:
         keyboard_rows.append([InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")])
     keyboard_rows.append([InlineKeyboardButton("🔙 Back", callback_data="back")])
     keyboard = InlineKeyboardMarkup(keyboard_rows)
@@ -67,6 +71,15 @@ async def report_start(client, callback):
             "Send your Pyrogram session strings (one per line)\n"
             "`client1_string`\n"
             "`client2_string`"
+        )
+    elif active_sessions > 0:
+        message_text = (
+            f"✅ **{active_sessions} sessions pehle se validate ho chuke hain.**\n\n"
+            "📝 **Send Session Strings**\n"
+            "Send your Pyrogram session strings (one per line)\n"
+            "`client1_string`\n"
+            "`client2_string`\n\n"
+            "Ya **Start Report** pe click karo."
         )
     else:
         message_text = (
@@ -132,6 +145,19 @@ async def validate_sessions(client, callback):
 
 @app.on_callback_query(filters.regex("start_report"))
 async def start_report(client, callback):
+    active_sessions = await db.get_active_session_count()
+    if active_sessions == 0:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
+        await callback.message.edit_text(
+            "❌ **Koi active session nahi mila.**\n\n"
+            "Pehle sessions validate karo.",
+            reply_markup=keyboard
+        )
+        await client.answer_callback_query(callback.id)
+        return
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ])
@@ -210,7 +236,18 @@ async def validate_target(client, callback):
     
     await callback.answer("⏳ Joining chat...")
     reporter = MassReporter()
-    await reporter.load_sessions()
+    active_count = await reporter.load_validated_sessions()
+    if active_count == 0:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
+        await callback.message.edit_text(
+            "❌ **No active sessions found.**\n\n"
+            "Pehle sessions validate karo.",
+            reply_markup=keyboard
+        )
+        return
     
     joined = await reporter.join_chat(chat_link)
     
@@ -322,7 +359,18 @@ async def handle_report_count(client, message):
     await message.reply_text("⏳ **Starting Mass Report...**")
     
     reporter = MassReporter()
-    await reporter.load_sessions()
+    active_count = await reporter.load_validated_sessions()
+    if active_count == 0:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
+        await message.reply_text(
+            "❌ **No active sessions found.**\n\n"
+            "Pehle sessions validate karo.",
+            reply_markup=keyboard
+        )
+        return
     
     success, failed = await reporter.mass_report(
         state['target'], 

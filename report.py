@@ -11,9 +11,16 @@ class MassReporter:
     def __init__(self):
         self.clients = []
         self.active_clients = []
-        
+
     async def load_sessions(self):
         sessions = await db.get_all_sessions()
+        return await self._build_clients(sessions, validate=True)
+
+    async def load_validated_sessions(self):
+        sessions = await db.get_active_sessions()
+        return await self._build_clients(sessions, validate=False)
+
+    async def _build_clients(self, sessions, validate):
         self.clients = []
         self.active_clients = []
         for session in sessions:
@@ -56,9 +63,10 @@ class MassReporter:
                     "session_name": session_name,
                     "user_id": me.id
                 })
-                await db.validate_session(session_name, "active")
+                if validate:
+                    await db.validate_session(session_name, "active")
             except Exception as e:
-                if session_name:
+                if validate and session_name:
                     await db.validate_session(session_name, "failed")
                 logging.error(
                     "Session %s failed: %s",
