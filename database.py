@@ -1,8 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_URL, DB_NAME
-import logging
-
-logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
