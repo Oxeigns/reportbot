@@ -136,13 +136,24 @@ class MassReporter:
         results = await asyncio.gather(*tasks)
         return sum(results)
 
-    async def mass_report_chat(self, target_chat: str, reason, description: str = "") -> dict:
+    async def mass_report_chat(
+        self,
+        target_chat: str,
+        reason,
+        description: str = "",
+        max_reports: int | None = None,
+        retries: int = 1
+    ) -> dict:
         """🔥 Mass report"""
         if not self.active_clients:
             return {"success": 0, "failed": 0, "total": 0}
-        
+
+        clients = list(self.active_clients)
+        if max_reports is not None:
+            clients = clients[:max_reports]
+
         semaphore = asyncio.Semaphore(3)
-        results = {"success": 0, "failed": 0, "total": len(self.active_clients)}
+        results = {"success": 0, "failed": 0, "total": len(clients)}
         
         async def report_one(client_data):
             async with semaphore:
@@ -152,7 +163,7 @@ class MassReporter:
                         raw.functions.messages.Report(
                             peer=await client.resolve_peer(target_chat),
                             reason=reason,
-                            message="",
+                            message=description or "",
                             id=[],
                             option=b""
                         )
@@ -164,15 +175,26 @@ class MassReporter:
                     return False
                 except:
                     return False
-        
-        tasks = [report_one(c) for c in self.active_clients]
-        task_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for result in task_results:
-            if result is True:
-                results["success"] += 1
-            else:
-                results["failed"] += 1
+
+        remaining_clients = clients
+        for attempt in range(retries + 1):
+            if not remaining_clients:
+                break
+            tasks = [report_one(c) for c in remaining_clients]
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            next_remaining = []
+
+            for client_data, result in zip(remaining_clients, task_results):
+                if result is True:
+                    results["success"] += 1
+                else:
+                    next_remaining.append(client_data)
+
+            remaining_clients = next_remaining
+            if attempt < retries and remaining_clients:
+                await asyncio.sleep(1)
+
+        results["failed"] = len(remaining_clients)
         
         return results
 
