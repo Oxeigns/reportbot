@@ -77,6 +77,12 @@ async def stats_callback(client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex("^validate_all$"))
 async def validate_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
+    if not reporter.has_api_credentials():
+        await callback.message.edit_text(
+            "❌ **MISSING API_ID/API_HASH**\n\n"
+            "Set `API_ID` and `API_HASH` in config vars before validating."
+        )
+        return
     await callback.message.edit_text("🔄 **VALIDATING... (30s)**")
     
     results = await reporter.validate_all_sessions()
@@ -165,6 +171,13 @@ async def handle_user_input(client, message):
         del app.user_states[user_id]
 
     elif state["step"] == "target_chat":
+        if not reporter.has_api_credentials():
+            await message.reply_text(
+                "❌ **MISSING API_ID/API_HASH**\n\n"
+                "Set `API_ID` and `API_HASH` in config vars before reporting."
+            )
+            del app.user_states[user_id]
+            return
         chat_id = get_chat_id(text)
         app.user_states[user_id] = {"step": "reporting", "target": chat_id}
         

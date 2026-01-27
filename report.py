@@ -12,6 +12,8 @@ class SessionValidator:
     async def test_session(session_string: str, session_name: str) -> tuple[bool, str]:
         """🔥 ROBUST session testing - CATCHES ALL ERRORS"""
         try:
+            if not (API_ID and API_HASH and API_ID != 0):
+                return False, "❌ Missing API_ID/API_HASH in config"
             client = Client(
                 session_name,
                 api_id=API_ID,
@@ -40,8 +42,14 @@ class MassReporter:
     def __init__(self):
         self.active_clients = []
 
+    def has_api_credentials(self) -> bool:
+        return bool(API_ID and API_HASH and API_ID != 0)
+
     async def validate_all_sessions(self) -> dict:
         """🔥 VALIDATE ALL sessions"""
+        if not self.has_api_credentials():
+            logger.error("Missing API_ID/API_HASH. Cannot validate sessions.")
+            return {"active": 0, "failed": 0, "total": 0}
         pending = await db.get_pending_sessions()
         failed = await db.get_failed_sessions()
         all_to_validate = failed + pending
@@ -66,6 +74,9 @@ class MassReporter:
 
     async def load_active_clients(self) -> int:
         """Load active sessions"""
+        if not self.has_api_credentials():
+            logger.error("Missing API_ID/API_HASH. Cannot load sessions.")
+            return 0
         sessions = await db.get_active_sessions()
         self.active_clients.clear()
         
