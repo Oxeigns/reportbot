@@ -124,4 +124,8 @@ class Database:
     async def is_sudo(self, user_id: int) -> bool:
         return await self.sudos.count_documents({"user_id": user_id}) > 0
 
+    async def get_sudo_ids(self) -> list[int]:
+        records = await self.sudos.find({}, {"_id": 0, "user_id": 1}).sort("user_id", 1).to_list(None)
+        return [record["user_id"] for record in records if "user_id" in record]
+
 db = Database()
