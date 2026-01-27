@@ -284,9 +284,10 @@ async def handle_user_input(client, message):
         available = len(reporter.active_clients)
         await message.reply_text(
             "✅ **DESCRIPTION SAVED!**\n\n"
-            "🔢 **HOW MANY REPORTS?**\n"
+            "🔢 **HOW MANY REPORT ATTEMPTS?**\n"
             f"• Available sessions: `{available}`\n"
-            "• Send a number (e.g., `10`)",
+            "• Each attempt uses all sessions\n"
+            "• Send a number (e.g., `3`)",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -327,39 +328,52 @@ async def handle_user_input(client, message):
         description = state.get("description", "")
         message_ids = state.get("message_ids")
         available = len(reporter.active_clients)
-        report_count = min(requested, available)
+        attempts = requested
 
-        await message.reply_text("🔥 **REPORTING...**")
+        status_message = await message.reply_text("🔥 **REPORTING...**", parse_mode=ParseMode.MARKDOWN)
+
+        async def update_progress(attempt, total_attempts, results):
+            await status_message.edit_text(
+                "📊 **LIVE PANEL**\n\n"
+                f"🧪 **ATTEMPT:** `{attempt}/{total_attempts}`\n"
+                f"✅ **SUCCESS:** `{results['success']}`\n"
+                f"❌ **FAILED:** `{results['failed']}`\n"
+                f"📈 **TOTAL:** `{results['total']}`\n\n"
+                f"🎯 **{chat_id}**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
         if message_ids:
             results = await reporter.mass_report_message(
                 chat_id,
                 message_ids=message_ids,
                 reason=reason,
                 description=description,
-                max_reports=report_count
+                attempts=attempts,
+                on_progress=update_progress
             )
         else:
             results = await reporter.mass_report_chat(
                 chat_id,
                 reason=reason,
                 description=description,
-                max_reports=report_count
+                attempts=attempts,
+                on_progress=update_progress
             )
 
         keyboard = main_keyboard(await is_authorized(user_id))
-        extra_note = ""
-        if requested > available:
-            extra_note = f"\n⚠️ Only `{available}` sessions available, used `{report_count}`."
-
+        total_possible = attempts * available
         text = f"""🎉 **REPORT FINISHED!**
 
+🧪 **ATTEMPTS:** `{attempts}`
+📊 **TOTAL REPORTS:** `{total_possible}`
 ✅ **SUCCESS:** `{results['success']}`
 ❌ **FAILED:** `{results['failed']}`
-📊 **TOTAL:** `{results['total']}`{extra_note}
+📈 **TOTAL:** `{results['total']}`
 
 🎯 **{chat_id}**
 """
-        await message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        await status_message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
         del app.user_states[user_id]
 
 def get_chat_id(link: str) -> str:
