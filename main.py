@@ -478,7 +478,7 @@ async def handle_user_input(client, message):
             "⚠️ Do not close the panel..."
         )
         status_message = await message.reply_text(
-            animation_template.format(frame=HACKER_FRAMES[0]),
+            animation_template.format(frame=HACKER_FRAMES[0], phase=JOIN_CHAT_PHASES[0]),
             parse_mode=ParseMode.MARKDOWN
         )
         stop_event = asyncio.Event()
@@ -515,7 +515,7 @@ async def handle_user_input(client, message):
             "💡 Almost there..."
         )
         status_message = await message.reply_text(
-            animation_template.format(frame=HACKER_FRAMES[0]),
+            animation_template.format(frame=HACKER_FRAMES[0], phase=RESOLVE_CHAT_PHASES[0]),
             parse_mode=ParseMode.MARKDOWN
         )
         await animate_for_duration(
