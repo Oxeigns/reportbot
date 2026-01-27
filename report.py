@@ -41,11 +41,15 @@ class MassReporter:
                     session_name,
                     api_id=API_ID,
                     api_hash=API_HASH,
-                    in_memory=True
+                    in_memory=True,
+                    session_string=session_string,
                 )
-                client.session_string = session_string
-                await client.start()
-                me = await client.get_me()
+                await client.connect()
+                try:
+                    me = await client.get_me()
+                except Exception:
+                    await client.disconnect()
+                    raise
                 self.active_clients.append({
                     "client": client,
                     "session_name": session_name,
