@@ -17,6 +17,19 @@ if API_ID and API_HASH:
 app = Client("startlove_bot", **client_kwargs)
 app.user_states = {}
 
+HACKER_FRAMES = [
+    "▰▱▱▱▱",
+    "▱▰▱▱▱",
+    "▱▱▰▱▱",
+    "▱▱▱▰▱",
+    "▱▱▱▱▰",
+    "▰▰▱▱▱",
+    "▱▰▰▱▱",
+    "▱▱▰▰▱",
+    "▱▱▱▰▰",
+    "▰▱▱▱▰",
+]
+
 REPORT_REASONS = {
     "spam": ("🚫 SPAM", raw.types.InputReportReasonSpam()),
     "violence": ("⚔️ VIOLENCE", raw.types.InputReportReasonViolence()),
@@ -35,6 +48,29 @@ async def safe_answer(callback: CallbackQuery):
         await callback.answer()
     except:
         pass
+
+async def animate_message(message, template: str, stop_event: asyncio.Event, interval: float = 1.2):
+    frame_index = 0
+    while not stop_event.is_set():
+        frame = HACKER_FRAMES[frame_index % len(HACKER_FRAMES)]
+        try:
+            await message.edit_text(
+                template.format(frame=frame),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except:
+            pass
+        await asyncio.sleep(interval)
+        frame_index += 1
+
+async def animate_for_duration(message, template: str, duration: float = 2.4, interval: float = 0.6):
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(animate_message(message, template, stop_event, interval))
+    try:
+        await asyncio.sleep(duration)
+    finally:
+        stop_event.set()
+        await task
 
 def main_keyboard(is_admin: bool = False):
     keyboard = [
@@ -96,9 +132,20 @@ async def validate_callback(client, callback: CallbackQuery):
             "Set `API_ID` and `API_HASH` in config vars before validating."
         )
         return
-    await callback.message.edit_text("🔄 **VALIDATING... (30s)**")
+    animation_template = (
+        "💻 **SESSION VAULT CHECK**\n\n"
+        "⌛ **Scanning nodes...** `{frame}`\n"
+        "🔐 Verifying keys & sessions\n"
+        "🧠 Hold tight, hacking in progress..."
+    )
+    stop_event = asyncio.Event()
+    animation_task = asyncio.create_task(
+        animate_message(callback.message, animation_template, stop_event, 1.2)
+    )
     
     results = await reporter.validate_all_sessions()
+    stop_event.set()
+    await animation_task
     stats = await db.get_stats()
     
     emoji = "✅" if stats['active'] > 0 else "⚠️"
@@ -230,13 +277,29 @@ async def handle_user_input(client, message):
             return
         join_link = text
         await reporter.load_active_clients()
+        animation_template = (
+            "🛰️ **INFILTRATING CHAT**\n\n"
+            "🔌 Establishing tunnels `{frame}`\n"
+            "🧭 Syncing sessions & join requests\n"
+            "⚠️ Do not close the panel..."
+        )
+        status_message = await message.reply_text(
+            animation_template.format(frame=HACKER_FRAMES[0]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        stop_event = asyncio.Event()
+        animation_task = asyncio.create_task(
+            animate_message(status_message, animation_template, stop_event, 1.2)
+        )
         joined = await reporter.join_target_chat(join_link)
+        stop_event.set()
+        await animation_task
         app.user_states[user_id] = {
             "step": "target_chat_link",
             "join_link": join_link
         }
 
-        await message.reply_text(
+        await status_message.edit_text(
             f"✅ **JOINED:** {joined}/{len(reporter.active_clients)}\n\n"
             "🔗 **SEND TARGET CHAT OR MESSAGE LINK:**\n\n"
             "`@username`\n`t.me/username`\n"
@@ -245,6 +308,17 @@ async def handle_user_input(client, message):
         )
 
     elif state["step"] == "target_chat_link":
+        animation_template = (
+            "🔎 **RESOLVING TARGET**\n\n"
+            "🧩 Parsing link `{frame}`\n"
+            "🛰️ Mapping chat routes\n"
+            "💡 Almost there..."
+        )
+        status_message = await message.reply_text(
+            animation_template.format(frame=HACKER_FRAMES[0]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await animate_for_duration(status_message, animation_template, 2.4, 0.6)
         chat_id, message_ids = parse_report_target(text)
         app.user_states[user_id] = {
             "step": "report_type",
@@ -265,7 +339,7 @@ async def handle_user_input(client, message):
         if message_ids:
             message_line = f"\n🧾 **MESSAGE ID:** `{message_ids[0]}`"
 
-        await message.reply_text(
+        await status_message.edit_text(
             f"🎯 **RESOLVED CHAT:** `{chat_id}`{message_line}\n\n"
             "📝 **SELECT REPORT TYPE:**",
             reply_markup=InlineKeyboardMarkup(reason_rows),
