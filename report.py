@@ -5,6 +5,7 @@ from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
+from peer_resolver import resolve_target_peer
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +67,19 @@ class MassReporter:
     
     @staticmethod
     async def _ensure_peer(client: Client, target_chat):
-        try:
-            await client.resolve_peer(target_chat)
-            return
-        except Exception as first_error:
-            try:
-                await client.get_chat(target_chat)
-            except Exception as second_error:
-                raise second_error from first_error
-        await client.resolve_peer(target_chat)
+        entity = await resolve_target_peer(client, target_chat, log=logger)
+        if entity is None:
+            raise ValueError(f"Unable to resolve target {target_chat}")
+        return entity
 
     @staticmethod
     def _attach_report_helpers(client: Client) -> None:
         if not hasattr(client, "report_message"):
             async def report_message(self, target_chat, message_ids, reason, description: str = ""):
-                await MassReporter._ensure_peer(self, target_chat)
+                entity = await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
-                        peer=await self.resolve_peer(target_chat),
+                        peer=await self.resolve_peer(entity.id),
                         reason=reason,
                         message=description or "",
                         id=message_ids
@@ -94,10 +90,10 @@ class MassReporter:
 
         if not hasattr(client, "report_chat"):
             async def report_chat(self, target_chat, reason, description: str = ""):
-                await MassReporter._ensure_peer(self, target_chat)
+                entity = await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
-                        peer=await self.resolve_peer(target_chat),
+                        peer=await self.resolve_peer(entity.id),
                         reason=reason,
                         message=description or "",
                         id=[]
