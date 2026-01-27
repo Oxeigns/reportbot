@@ -95,7 +95,12 @@ class MassReporter:
                     "client": client,
                     "name": session["session_name"]
                 })
-            except:
+            except Exception as error:
+                await db.update_session_status(
+                    session["session_name"],
+                    "failed",
+                    f"❌ {str(error)[:80]}"
+                )
                 continue
         
         return len(self.active_clients)
