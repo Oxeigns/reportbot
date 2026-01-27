@@ -22,6 +22,9 @@ app = Client(
 )
 app.user_states = {}
 
+async def _is_authorized(user_id):
+    return user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)
+
 
 def _get_chat_identifier(link):
     if link.startswith("https://t.me/"):
@@ -88,6 +91,9 @@ async def start(client, message):
 @app.on_callback_query(filters.regex("report_start"))
 async def report_start(client, callback):
     await _safe_answer_callback(callback)
+    if not await _is_authorized(callback.from_user.id):
+        await callback.answer("❌ Owner/Sudo only.", show_alert=True)
+        return
     total_sessions = await db.get_total_session_count()
     active_sessions = await db.get_active_session_count()
     if total_sessions == 0:
@@ -131,7 +137,7 @@ async def report_start(client, callback):
 @app.on_message(filters.private & ~filters.command("start"))
 async def handle_sessions(client, message):
     user_id = message.from_user.id
-    if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
+    if not await _is_authorized(user_id):
         return
     state = app.user_states.get(user_id)
     if not state or state.get("step") != "awaiting_sessions":
@@ -181,6 +187,9 @@ async def validate_sessions(client, callback):
 @app.on_callback_query(filters.regex("start_report"))
 async def start_report(client, callback):
     await _safe_answer_callback(callback)
+    if not await _is_authorized(callback.from_user.id):
+        await callback.answer("❌ Owner/Sudo only.", show_alert=True)
+        return
     active_sessions = await db.get_active_session_count()
     if active_sessions == 0:
         keyboard = InlineKeyboardMarkup([
@@ -201,7 +210,9 @@ async def handle_chat_link(client, message):
     state = app.user_states.get(user_id)
     if not state or state.get("step") != "awaiting_chat":
         return
-    if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
+    if not await _is_authorized(user_id):
+        app.user_states.pop(user_id, None)
+        await message.reply_text("❌ **Owner/Sudo only.**", parse_mode="markdown")
         return
     chat_link = message.text.strip()
     if not _looks_like_chat_link(chat_link):
@@ -250,7 +261,9 @@ async def handle_target_link(client, message):
     state = app.user_states.get(user_id)
     if not state or state.get("step") != "awaiting_target":
         return
-    if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
+    if not await _is_authorized(user_id):
+        app.user_states.pop(user_id, None)
+        await message.reply_text("❌ **Owner/Sudo only.**", parse_mode="markdown")
         return
         
     target_link = message.text.strip()
@@ -333,6 +346,10 @@ async def handle_description(client, message):
     user_state = app.user_states.get(message.from_user.id)
     if not user_state or user_state.get("step") != "awaiting_description":
         return
+    if not await _is_authorized(message.from_user.id):
+        app.user_states.pop(message.from_user.id, None)
+        await message.reply_text("❌ **Owner/Sudo only.**", parse_mode="markdown")
+        return
     if not hasattr(app, 'report_state') or app.report_state['user_id'] != message.from_user.id:
         return
     
@@ -354,6 +371,10 @@ async def handle_description(client, message):
 async def handle_report_count(client, message):
     state = app.user_states.get(message.from_user.id)
     if not state or state.get("step") != "awaiting_count":
+        return
+    if not await _is_authorized(message.from_user.id):
+        app.user_states.pop(message.from_user.id, None)
+        await message.reply_text("❌ **Owner/Sudo only.**", parse_mode="markdown")
         return
     if not hasattr(app, 'report_state'):
         return
