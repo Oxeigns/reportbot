@@ -65,9 +65,22 @@ class MassReporter:
         return False
     
     @staticmethod
+    async def _ensure_peer(client: Client, target_chat):
+        try:
+            await client.resolve_peer(target_chat)
+            return
+        except Exception as first_error:
+            try:
+                await client.get_chat(target_chat)
+            except Exception as second_error:
+                raise second_error from first_error
+        await client.resolve_peer(target_chat)
+
+    @staticmethod
     def _attach_report_helpers(client: Client) -> None:
         if not hasattr(client, "report_message"):
             async def report_message(self, target_chat, message_ids, reason, description: str = ""):
+                await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
                         peer=await self.resolve_peer(target_chat),
@@ -81,6 +94,7 @@ class MassReporter:
 
         if not hasattr(client, "report_chat"):
             async def report_chat(self, target_chat, reason, description: str = ""):
+                await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
                         peer=await self.resolve_peer(target_chat),
