@@ -238,14 +238,19 @@ async def handle_user_input(client, message):
 
         await message.reply_text(
             f"✅ **JOINED:** {joined}/{len(reporter.active_clients)}\n\n"
-            "🔗 **SEND TARGET LINK OF SAME CHAT:**\n\n"
-            "`@username`\n`t.me/username`",
+            "🔗 **SEND TARGET CHAT OR MESSAGE LINK:**\n\n"
+            "`@username`\n`t.me/username`\n"
+            "`t.me/username/123`",
             parse_mode=ParseMode.MARKDOWN
         )
 
     elif state["step"] == "target_chat_link":
-        chat_id = get_chat_id(text)
-        app.user_states[user_id] = {"step": "report_type", "target": chat_id}
+        chat_id, message_ids = parse_report_target(text)
+        app.user_states[user_id] = {
+            "step": "report_type",
+            "target": chat_id,
+            "message_ids": message_ids
+        }
 
         reason_rows = []
         reason_items = list(REPORT_REASONS.items())
@@ -256,8 +261,12 @@ async def handle_user_input(client, message):
             reason_rows.append(row)
         reason_rows.append([InlineKeyboardButton("🏠 MAIN", callback_data="home")])
 
+        message_line = ""
+        if message_ids:
+            message_line = f"\n🧾 **MESSAGE ID:** `{message_ids[0]}`"
+
         await message.reply_text(
-            f"🎯 **RESOLVED CHAT:** `{chat_id}`\n\n"
+            f"🎯 **RESOLVED CHAT:** `{chat_id}`{message_line}\n\n"
             "📝 **SELECT REPORT TYPE:**",
             reply_markup=InlineKeyboardMarkup(reason_rows),
             parse_mode=ParseMode.MARKDOWN
@@ -269,7 +278,8 @@ async def handle_user_input(client, message):
             "step": "report_count",
             "target": state["target"],
             "reason_key": state["reason_key"],
-            "description": description
+            "description": description,
+            "message_ids": state.get("message_ids")
         }
         available = len(reporter.active_clients)
         await message.reply_text(
@@ -315,16 +325,26 @@ async def handle_user_input(client, message):
         reason = REPORT_REASONS.get(reason_key, REPORT_REASONS["spam"])[1]
         chat_id = state["target"]
         description = state.get("description", "")
+        message_ids = state.get("message_ids")
         available = len(reporter.active_clients)
         report_count = min(requested, available)
 
         await message.reply_text("🔥 **REPORTING...**")
-        results = await reporter.mass_report_chat(
-            chat_id,
-            reason=reason,
-            description=description,
-            max_reports=report_count
-        )
+        if message_ids:
+            results = await reporter.mass_report_message(
+                chat_id,
+                message_ids=message_ids,
+                reason=reason,
+                description=description,
+                max_reports=report_count
+            )
+        else:
+            results = await reporter.mass_report_chat(
+                chat_id,
+                reason=reason,
+                description=description,
+                max_reports=report_count
+            )
 
         keyboard = main_keyboard(await is_authorized(user_id))
         extra_note = ""
@@ -352,6 +372,23 @@ def get_chat_id(link: str) -> str:
         return f"@{username}" if not username.startswith("@") else username
     return link.lstrip("@")
 
+def parse_report_target(link: str) -> tuple[str, list[int] | None]:
+    cleaned = link.split("?")[0].strip()
+
+    if "t.me/c/" in cleaned:
+        parts = cleaned.split("t.me/c/")[1].split("/")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return f"-100{parts[0]}", [int(parts[1])]
+
+    if "t.me/" in cleaned:
+        parts = cleaned.split("t.me/")[1].split("/")
+        username = parts[0].strip()
+        if len(parts) >= 2 and parts[1].isdigit():
+            chat_id = f"@{username}" if not username.startswith("@") else username
+            return chat_id, [int(parts[1])]
+
+    return get_chat_id(cleaned), None
+
 @app.on_callback_query(filters.regex("^report_reason:"))
 async def report_reason_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
@@ -367,11 +404,13 @@ async def report_reason_callback(client, callback: CallbackQuery):
         return
 
     chat_id = state["target"]
+    message_ids = state.get("message_ids")
     reason_label = REPORT_REASONS[reason_key][0]
     app.user_states[user_id] = {
         "step": "report_description",
         "target": chat_id,
-        "reason_key": reason_key
+        "reason_key": reason_key,
+        "message_ids": message_ids
     }
 
     await callback.message.edit_text(
