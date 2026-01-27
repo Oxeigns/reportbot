@@ -42,6 +42,7 @@ class MassReporter:
                     api_id=API_ID,
                     api_hash=API_HASH,
                     in_memory=True,
+                    no_updates=True,
                     session_string=session_string,
                 )
                 await client.connect()
