@@ -30,6 +30,30 @@ HACKER_FRAMES = [
     "▰▱▱▱▰",
 ]
 
+SESSION_VALIDATE_PHASES = [
+    "Booting session matrix",
+    "Decrypting vault tokens",
+    "Cross-checking API keys",
+    "Syncing session fingerprints",
+    "Finalizing audit pass",
+]
+
+JOIN_CHAT_PHASES = [
+    "Dialing tunnel nodes",
+    "Injecting join handshake",
+    "Resolving invite hashes",
+    "Confirming membership",
+    "Locking signal on target",
+]
+
+RESOLVE_CHAT_PHASES = [
+    "Parsing deep link",
+    "Resolving entity ID",
+    "Mapping message trail",
+    "Verifying chat access",
+    "Preparing report panel",
+]
+
 REPORT_REASONS = {
     "spam": ("🚫 SPAM", raw.types.InputReportReasonSpam()),
     "violence": ("⚔️ VIOLENCE", raw.types.InputReportReasonViolence()),
@@ -63,9 +87,41 @@ async def animate_message(message, template: str, stop_event: asyncio.Event, int
         await asyncio.sleep(interval)
         frame_index += 1
 
-async def animate_for_duration(message, template: str, duration: float = 2.4, interval: float = 0.6):
+async def animate_message_with_phases(
+    message,
+    template: str,
+    stop_event: asyncio.Event,
+    phases: list[str],
+    interval: float = 1.2,
+):
+    frame_index = 0
+    while not stop_event.is_set():
+        frame = HACKER_FRAMES[frame_index % len(HACKER_FRAMES)]
+        phase = phases[frame_index % len(phases)]
+        try:
+            await message.edit_text(
+                template.format(frame=frame, phase=phase),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except:
+            pass
+        await asyncio.sleep(interval)
+        frame_index += 1
+
+async def animate_for_duration(
+    message,
+    template: str,
+    duration: float = 2.4,
+    interval: float = 0.6,
+    phases: list[str] | None = None,
+):
     stop_event = asyncio.Event()
-    task = asyncio.create_task(animate_message(message, template, stop_event, interval))
+    if phases:
+        task = asyncio.create_task(
+            animate_message_with_phases(message, template, stop_event, phases, interval)
+        )
+    else:
+        task = asyncio.create_task(animate_message(message, template, stop_event, interval))
     try:
         await asyncio.sleep(duration)
     finally:
@@ -134,13 +190,19 @@ async def validate_callback(client, callback: CallbackQuery):
         return
     animation_template = (
         "💻 **SESSION VAULT CHECK**\n\n"
-        "⌛ **Scanning nodes...** `{frame}`\n"
+        "⌛ `{frame}` **{phase}**\n"
         "🔐 Verifying keys & sessions\n"
         "🧠 Hold tight, hacking in progress..."
     )
     stop_event = asyncio.Event()
     animation_task = asyncio.create_task(
-        animate_message(callback.message, animation_template, stop_event, 1.2)
+        animate_message_with_phases(
+            callback.message,
+            animation_template,
+            stop_event,
+            SESSION_VALIDATE_PHASES,
+            1.1
+        )
     )
     
     results = await reporter.validate_all_sessions()
@@ -279,7 +341,7 @@ async def handle_user_input(client, message):
         await reporter.load_active_clients()
         animation_template = (
             "🛰️ **INFILTRATING CHAT**\n\n"
-            "🔌 Establishing tunnels `{frame}`\n"
+            "🔌 `{frame}` **{phase}**\n"
             "🧭 Syncing sessions & join requests\n"
             "⚠️ Do not close the panel..."
         )
@@ -289,7 +351,13 @@ async def handle_user_input(client, message):
         )
         stop_event = asyncio.Event()
         animation_task = asyncio.create_task(
-            animate_message(status_message, animation_template, stop_event, 1.2)
+            animate_message_with_phases(
+                status_message,
+                animation_template,
+                stop_event,
+                JOIN_CHAT_PHASES,
+                1.0
+            )
         )
         joined = await reporter.join_target_chat(join_link)
         stop_event.set()
@@ -310,7 +378,7 @@ async def handle_user_input(client, message):
     elif state["step"] == "target_chat_link":
         animation_template = (
             "🔎 **RESOLVING TARGET**\n\n"
-            "🧩 Parsing link `{frame}`\n"
+            "🧩 `{frame}` **{phase}**\n"
             "🛰️ Mapping chat routes\n"
             "💡 Almost there..."
         )
@@ -318,7 +386,13 @@ async def handle_user_input(client, message):
             animation_template.format(frame=HACKER_FRAMES[0]),
             parse_mode=ParseMode.MARKDOWN
         )
-        await animate_for_duration(status_message, animation_template, 2.4, 0.6)
+        await animate_for_duration(
+            status_message,
+            animation_template,
+            2.7,
+            0.6,
+            RESOLVE_CHAT_PHASES
+        )
         chat_id, message_ids = parse_report_target(text)
         app.user_states[user_id] = {
             "step": "report_type",
