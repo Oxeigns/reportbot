@@ -42,15 +42,31 @@ async def start(client, message):
 
 @app.on_callback_query(filters.regex("report_start"))
 async def report_start(client, callback):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
+    total_sessions = await db.get_total_session_count()
+    keyboard_rows = []
+    if total_sessions > 0:
+        keyboard_rows.append([InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")])
+    keyboard_rows.append([InlineKeyboardButton("🔙 Back", callback_data="back")])
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
+    if total_sessions == 0:
+        message_text = (
+            "❌ **startlove DB me koi session nahi mila.**\n\n"
+            "📝 **Send Session Strings**\n"
+            "Send your Pyrogram session strings (one per line)\n"
+            "`client1_string`\n"
+            "`client2_string`"
+        )
+    else:
+        message_text = (
+            f"✅ **startlove DB se {total_sessions} sessions load ho gaye.**\n\n"
+            "📝 **Send Session Strings**\n"
+            "Send your Pyrogram session strings (one per line)\n"
+            "`client1_string`\n"
+            "`client2_string`\n\n"
+            "Ya **Validate Sessions** pe click karo."
+        )
     await callback.message.edit_text(
-        "📝 **Send Session Strings**\n\n"
-        "Send your Pyrogram session strings (one per line)\n"
-        "`client1_string`\n"
-        "`client2_string`\n\n"
-        "Sessions will be saved in database **startlove**",
+        message_text,
         reply_markup=keyboard
     )
     await client.answer_callback_query(callback.id)
@@ -63,10 +79,12 @@ async def handle_sessions(client, message):
     
     text = message.text
     lines = text.strip().split('\n')
+    saved_sessions = 0
     
     for i, line in enumerate(lines):
         if line.strip():
             await db.add_session(line.strip(), f"session_{i+1}")
+            saved_sessions += 1
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
@@ -74,7 +92,7 @@ async def handle_sessions(client, message):
     ])
     
     await message.reply_text(
-        f"✅ **Saved {len(lines)} sessions!**\n\n"
+        f"✅ **Saved {saved_sessions} sessions!**\n\n"
         "Click **Validate Sessions** to check them.",
         reply_markup=keyboard
     )
@@ -85,6 +103,7 @@ async def validate_sessions(client, callback):
     
     reporter = MassReporter()
     active_count = await reporter.load_sessions()
+    total_sessions = await db.get_total_session_count()
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Start Report", callback_data="start_report")],
@@ -94,7 +113,7 @@ async def validate_sessions(client, callback):
     await callback.message.edit_text(
         f"✅ **Validation Complete!**\n\n"
         f"🟢 Active Sessions: **{active_count}**\n"
-        f"🔴 Failed Sessions: **{await db.get_session_count() - active_count}**\n\n"
+        f"🔴 Failed Sessions: **{total_sessions - active_count}**\n\n"
         f"Click **Start Report** to begin!",
         reply_markup=keyboard
     )
@@ -312,7 +331,7 @@ async def stats(client, callback):
         await callback.answer("❌ Owner only!")
         return
     
-    active_sessions = await db.get_session_count()
+    active_sessions = await db.get_active_session_count()
     sudos = await db.get_sudos()
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]])
