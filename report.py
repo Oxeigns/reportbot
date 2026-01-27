@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from pyrogram import Client
-from pyrogram.errors import FloodWait, SessionPasswordNeeded, PhoneCodeInvalid, IncorrectPaddingError
+from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
 
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class SessionValidator:
     @staticmethod
     async def test_session(session_string: str, session_name: str) -> tuple[bool, str]:
-        """🔥 ROBUST session testing - handles all errors"""
+        """🔥 ROBUST session testing - CATCHES ALL ERRORS"""
         try:
             client = Client(
                 session_name,
@@ -18,7 +18,7 @@ class SessionValidator:
                 api_hash=API_HASH,
                 session_string=session_string,
                 in_memory=True,
-                no_updates=True  # 🔥 Speed optimization
+                no_updates=True
             )
             
             await client.start()
@@ -27,11 +27,13 @@ class SessionValidator:
             
             return True, f"✅ {me.first_name}"
             
-        except IncorrectPaddingError:
-            return False, "❌ Incorrect padding - REGENERATE session"
         except FloodWait as e:
             return False, f"⏳ FloodWait {e.value}s"
         except Exception as e:
+            # 🔥 CATCHES "Incorrect padding" + ALL OTHER ERRORS
+            error_msg = str(e).lower()
+            if "padding" in error_msg or "authkey" in error_msg:
+                return False, "❌ **Invalid session** - REGENERATE"
             return False, f"❌ {str(e)[:50]}"
 
 class MassReporter:
@@ -39,11 +41,9 @@ class MassReporter:
         self.active_clients = []
 
     async def validate_all_sessions(self) -> dict:
-        """🔥 VALIDATE ALL with detailed errors"""
+        """🔥 VALIDATE ALL sessions"""
         pending = await db.get_pending_sessions()
         failed = await db.get_failed_sessions()
-        
-        # Re-validate failed sessions first
         all_to_validate = failed + pending
         
         results = {"active": 0, "failed": 0, "total": len(all_to_validate)}
@@ -65,7 +65,7 @@ class MassReporter:
         return results
 
     async def load_active_clients(self) -> int:
-        """Load only VALIDATED active sessions"""
+        """Load active sessions"""
         sessions = await db.get_active_sessions()
         self.active_clients.clear()
         
@@ -90,24 +90,27 @@ class MassReporter:
         return len(self.active_clients)
 
     async def join_target_chat(self, chat_link: str) -> int:
-        """Join target chat"""
+        """Join target"""
         joined = 0
         semaphore = asyncio.Semaphore(2)
         
         async def join_one(client_data):
             async with semaphore:
                 try:
-                    chat = await client_data["client"].join_chat(chat_link)
+                    await client_data["client"].join_chat(chat_link)
                     return True
                 except:
                     return False
         
+        if not self.active_clients:
+            return 0
+            
         tasks = [join_one(c) for c in self.active_clients]
         results = await asyncio.gather(*tasks)
         return sum(results)
 
     async def mass_report_chat(self, target_chat: str, reason: int = 1, description: str = "") -> dict:
-        """Mass report with concurrency control"""
+        """🔥 Mass report"""
         if not self.active_clients:
             return {"success": 0, "failed": 0, "total": 0}
         
@@ -122,22 +125,25 @@ class MassReporter:
                         chat_id=target_chat,
                         reason=reason,
                         message_ids=[],
-                        description=description[:500]  # Telegram limit
+                        description=description[:500]
                     )
+                    await asyncio.sleep(1)
                     return True
                 except FloodWait as e:
-                    await asyncio.sleep(e.value)
+                    await asyncio.sleep(e.value + 1)
                     return False
                 except:
                     return False
         
         tasks = [report_one(c) for c in self.active_clients]
-        task_results = await asyncio.gather(*tasks)
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        results["success"] = sum(task_results)
-        results["failed"] = len(task_results) - results["success"]
+        for result in task_results:
+            if result is True:
+                results["success"] += 1
+            else:
+                results["failed"] += 1
         
         return results
 
 reporter = MassReporter()
-validator = SessionValidator()
