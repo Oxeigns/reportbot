@@ -263,6 +263,85 @@ async def handle_user_input(client, message):
             parse_mode=ParseMode.MARKDOWN
         )
 
+    elif state["step"] == "report_description":
+        description = text
+        app.user_states[user_id] = {
+            "step": "report_count",
+            "target": state["target"],
+            "reason_key": state["reason_key"],
+            "description": description
+        }
+        available = len(reporter.active_clients)
+        await message.reply_text(
+            "✅ **DESCRIPTION SAVED!**\n\n"
+            "🔢 **HOW MANY REPORTS?**\n"
+            f"• Available sessions: `{available}`\n"
+            "• Send a number (e.g., `10`)",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    elif state["step"] == "report_count":
+        try:
+            requested = int(text)
+        except ValueError:
+            await message.reply_text(
+                "❌ **INVALID NUMBER**\n\n"
+                "Send a valid integer (e.g., `10`).",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        if requested < 1:
+            await message.reply_text(
+                "❌ **NUMBER MUST BE >= 1**\n\n"
+                "Send a valid integer (e.g., `10`).",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        if not reporter.active_clients:
+            await message.reply_text(
+                "❌ **NO ACTIVE SESSIONS FOUND!**\n\n"
+                "➕ Add at least 1 session to continue.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
+                    [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
+                ])
+            )
+            del app.user_states[user_id]
+            return
+
+        reason_key = state["reason_key"]
+        reason = REPORT_REASONS.get(reason_key, REPORT_REASONS["spam"])[1]
+        chat_id = state["target"]
+        description = state.get("description", "")
+        available = len(reporter.active_clients)
+        report_count = min(requested, available)
+
+        await message.reply_text("🔥 **REPORTING...**")
+        results = await reporter.mass_report_chat(
+            chat_id,
+            reason=reason,
+            description=description,
+            max_reports=report_count
+        )
+
+        keyboard = main_keyboard(await is_authorized(user_id))
+        extra_note = ""
+        if requested > available:
+            extra_note = f"\n⚠️ Only `{available}` sessions available, used `{report_count}`."
+
+        text = f"""🎉 **REPORT FINISHED!**
+
+✅ **SUCCESS:** `{results['success']}`
+❌ **FAILED:** `{results['failed']}`
+📊 **TOTAL:** `{results['total']}`{extra_note}
+
+🎯 **{chat_id}**
+"""
+        await message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        del app.user_states[user_id]
+
 def get_chat_id(link: str) -> str:
     link = link.split("?")[0].strip()
     if "/joinchat/" in link:
@@ -289,38 +368,24 @@ async def report_reason_callback(client, callback: CallbackQuery):
 
     chat_id = state["target"]
     reason_label = REPORT_REASONS[reason_key][0]
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 REPORT NOW", callback_data=f"mass_report|{reason_key}|{chat_id}")],
-        [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
-    ])
+    app.user_states[user_id] = {
+        "step": "report_description",
+        "target": chat_id,
+        "reason_key": reason_key
+    }
 
     await callback.message.edit_text(
         f"✅ **TYPE SELECTED:** {reason_label}\n\n"
         f"🎯 **{chat_id}**\n\n"
-        "**Click REPORT NOW!** 🔥",
-        reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
+        "📝 **SEND REPORT DESCRIPTION:**",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]]),
+        parse_mode=ParseMode.MARKDOWN
     )
 
 @app.on_callback_query(filters.regex("^mass_report\\|"))
 async def mass_report_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
-    _, reason_key, chat_id = callback.data.split("|", 2)
-    reason = REPORT_REASONS.get(reason_key, REPORT_REASONS["spam"])[1]
-    
-    await callback.message.edit_text("🔥 **REPORTING...**")
-    results = await reporter.mass_report_chat(chat_id, reason=reason)
-    
-    keyboard = main_keyboard(await is_authorized(callback.from_user.id))
-    
-    text = f"""🎉 **REPORT FINISHED!**
-
-✅ **SUCCESS:** `{results['success']}`
-❌ **FAILED:** `{results['failed']}`
-📊 **TOTAL:** `{results['total']}`
-
-🎯 **{chat_id}**
-"""
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    await callback.answer("⚠️ Please follow the new report flow.", show_alert=True)
 
 @app.on_callback_query(filters.regex("^(home|help|manage_sudos)$"))
 async def other_callbacks(client, callback: CallbackQuery):
