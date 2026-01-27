@@ -1,0 +1,42 @@
+{
+  "name": "Mass Report Bot",
+  "description": "Pyrogram Mass Report Bot",
+  "repository": "https://github.com/yourusername/mass-report-bot",
+  "logo": "https://telegra.ph/file/abc123.jpg",
+  "keywords": ["python", "telegram", "bot"],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Bot Token from @BotFather",
+      "required": true
+    },
+    "API_ID": {
+      "description": "Your API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Your API Hash from my.telegram.org",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram User ID",
+      "required": true
+    },
+    "MONGO_URL": {
+      "description": "MongoDB URL from mongodb.com",
+      "required": true
+    },
+    "DB_NAME": {
+      "description": "Database Name (default: startlove)",
+      "value": "startlove"
+    },
+    "SUDO_USERS": {
+      "description": "Sudo User IDs (comma separated, optional)",
+      "required": false
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
