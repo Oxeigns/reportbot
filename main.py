@@ -226,6 +226,15 @@ async def validate_callback(client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex("^add_session$"))
 async def add_session_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
+    if not reporter.has_api_credentials():
+        await callback.message.edit_text(
+            "❌ **MISSING API_ID/API_HASH**\n\n"
+            "Session validation is required before saving.\n"
+            "Set `API_ID` and `API_HASH` in config vars to continue.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
     app.user_states[callback.from_user.id] = {"step": "add_session"}
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]])
@@ -234,6 +243,7 @@ async def add_session_callback(client, callback: CallbackQuery):
         "• **One per line**\n"
         "• **Pyrogram v2** (`1BV...`)\n\n"
         "`1BVABC...`\n`1BVDEF...`\n`1BVXYZ...`\n\n"
+        "**Each session will be validated before saving.**\n"
         "**Send now!**",
         reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
     )
@@ -293,37 +303,46 @@ async def handle_user_input(client, message):
     text = message.text.strip()
     
     if state["step"] == "add_session":
+        if not reporter.has_api_credentials():
+            await message.reply_text(
+                "❌ **MISSING API_ID/API_HASH**\n\n"
+                "Session validation is required before saving.\n"
+                "Set `API_ID` and `API_HASH` in config vars to continue.",
+                reply_markup=main_keyboard(True),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            del app.user_states[user_id]
+            return
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         success_count = 0
         active_count = 0
+        declined_count = 0
         failed_count = 0
-        pending_count = 0
         base_count = await db.get_total_session_count()
         
-        for i, session in enumerate(lines):
-            session_name = f"session_{base_count + i + 1}"
+        for session in lines:
+            if not db.is_valid_session_string(session):
+                declined_count += 1
+                continue
+            session_name = f"session_{base_count + success_count + 1}"
+            validated, error = await SessionValidator.test_session(session, session_name)
+            if not validated:
+                declined_count += 1
+                continue
             ok, msg = await db.add_session(session, session_name)
             if not ok:
                 failed_count += 1
                 continue
+            await db.update_session_status(session_name, "active", None)
             success_count += 1
-            if reporter.has_api_credentials():
-                validated, error = await SessionValidator.test_session(session, session_name)
-                status = "active" if validated else "failed"
-                await db.update_session_status(session_name, status, None if validated else error)
-                if validated:
-                    active_count += 1
-                else:
-                    failed_count += 1
-            else:
-                pending_count += 1
+            active_count += 1
         
         stats = await db.get_stats()
         keyboard = main_keyboard(True)
         
         await message.reply_text(
-            f"✅ **{success_count}/{len(lines)} ADDED!**\n\n"
-            f"🟢 `{active_count}` Active | ❌ `{failed_count}` Failed | ⏳ `{pending_count}` Pending\n"
+            f"✅ **{success_count}/{len(lines)} SAVED!**\n\n"
+            f"🟢 `{active_count}` Active | 🚫 `{declined_count}` Declined | ❌ `{failed_count}` Failed\n"
             f"📊 `{stats['active']}` Active | `{stats['total']}` Total",
             reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
         )
