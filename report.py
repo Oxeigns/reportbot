@@ -1,81 +1,75 @@
 import asyncio
 from pyrogram import Client
-from pyrogram.errors import FloodWait, PeerFlood, ChatAdminRequired
+from pyrogram.errors import FloodWait, PeerFlood, ChatAdminRequired, UserAlreadyParticipant
 from config import API_ID, API_HASH
 from database import db
 import logging
 
-logging.basicConfig(level=logging.INFO)
-
 class MassReporter:
     def __init__(self):
-        self.clients = []
         self.active_clients = []
-
+        
     async def load_sessions(self):
+        """Load and validate all sessions"""
         sessions = await db.get_all_sessions()
-        return await self._build_clients(sessions, validate=True)
-
-    async def load_validated_sessions(self):
-        sessions = await db.get_active_sessions()
-        return await self._build_clients(sessions, validate=False)
-
-    async def _build_clients(self, sessions, validate):
-        self.clients = []
         self.active_clients = []
+        
         for session in sessions:
-            session_id = session.get("_id")
-            session_name = session.get("session_name") or session.get("name")
-            session_string = (
-                session.get("session_string")
-                or session.get("session")
-                or session.get("string")
-                or session.get("session_str")
-            )
-            if not session_name and session_string and session_id:
-                session_name = f"session_{session_id}"
-                await db.normalize_session(session_id, session_name=session_name)
-            if session_id and session_string and session.get("session_string") != session_string:
-                await db.normalize_session(session_id, session_string=session_string)
-            if not session_name or not session_string:
-                logging.warning(
-                    "Skipping session without required fields: %s",
-                    session.get("_id", "unknown"),
-                )
-                continue
             try:
+                session_name = session.get("session_name")
+                session_string = session.get("session_string")
+                
+                if not session_name or not session_string:
+                    continue
+                    
                 client = Client(
                     session_name,
                     api_id=API_ID,
                     api_hash=API_HASH,
-                    in_memory=True,
-                    no_updates=True,
-                    session_string=session_string,
+                    in_memory=True
                 )
-                await client.connect()
-                try:
-                    me = await client.get_me()
-                except Exception:
-                    await client.disconnect()
-                    raise
+                await client.start(session_string=session_string)
+                
+                await client.get_me()  # Test connection
                 self.active_clients.append({
                     "client": client,
-                    "session_name": session_name,
-                    "user_id": me.id
+                    "session_name": session_name
                 })
-                if validate:
-                    await db.validate_session(session_name, "active")
+                await db.validate_session(session_name, "active")
+                
             except Exception as e:
-                if validate and session_name:
+                session_name = session.get("session_name")
+                if session_name:
                     await db.validate_session(session_name, "failed")
-                logging.error(
-                    "Session %s failed: %s",
-                    session_name or "unknown",
-                    e,
-                )
+                logging.error(f"Session failed: {e}")
+        
         return len(self.active_clients)
     
-    async def join_chat(self, chat_link):
+    async def load_validated_sessions(self):
+        """Load only active sessions"""
+        sessions = await db.get_active_sessions()
+        self.active_clients = []
+        
+        for session in sessions:
+            try:
+                client = Client(
+                    session["session_name"],
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    in_memory=True
+                )
+                await client.start(session_string=session["session_string"])
+                self.active_clients.append({
+                    "client": client,
+                    "session_name": session["session_name"]
+                })
+            except Exception:
+                continue
+        
+        return len(self.active_clients)
+    
+    async def join_chat(self, chat_link: str) -> int:
+        """Join chat with all active clients"""
         joined = 0
         for client_data in self.active_clients:
             try:
@@ -83,21 +77,27 @@ class MassReporter:
                 await client.join_chat(chat_link)
                 joined += 1
                 await asyncio.sleep(1)
-            except Exception as e:
-                logging.error(f"Failed to join {chat_link} with {client_data['session_name']}: {e}")
+            except (UserAlreadyParticipant, FloodWait) as e:
+                if isinstance(e, FloodWait):
+                    await asyncio.sleep(e.value)
+                joined += 1
+            except Exception:
+                pass
         return joined
     
-    async def mass_report(self, target_chat, reason, description, report_count, progress_callback=None):
+    async def mass_report(self, target_chat: str, reason: int, description: str, 
+                         report_count: int) -> tuple[int, int]:
+        """Mass report target"""
         success = 0
         failed = 0
         
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent reports
+        semaphore = asyncio.Semaphore(3)
         
-        async def report_with_client(client_data):
+        async def report_single_client(client_data):
             async with semaphore:
                 client = client_data["client"]
                 try:
-                    for i in range(report_count):
+                    for _ in range(report_count):
                         await client.report_chat(
                             chat_id=target_chat,
                             reason=reason,
@@ -109,25 +109,16 @@ class MassReporter:
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
                     return True
-                except (PeerFlood, ChatAdminRequired):
-                    return False
                 except Exception:
                     return False
         
-        tasks = [
-            asyncio.create_task(report_with_client(client_data))
-            for client_data in self.active_clients
-        ]
-
-        total_clients = len(tasks)
-
-        for task in asyncio.as_completed(tasks):
-            result = await task
+        tasks = [report_single_client(client_data) for client_data in self.active_clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results:
             if isinstance(result, bool) and result:
                 success += 1
             else:
                 failed += 1
-            if progress_callback:
-                await progress_callback(success, failed, total_clients)
         
         return success, failed
