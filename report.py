@@ -5,7 +5,7 @@ from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
-from peer_resolver import resolve_target_peer
+from resolver import ensure_target_ready
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +67,10 @@ class MassReporter:
     
     @staticmethod
     async def _ensure_peer(client: Client, target_chat):
-        entity = await resolve_target_peer(client, target_chat, log=logger)
-        if entity is None:
-            raise ValueError(f"Unable to resolve target {target_chat}")
-        return entity
+        result = await ensure_target_ready(client, target_chat)
+        if not result.get("ok"):
+            raise ValueError(f"Unable to resolve target {target_chat}: {result.get('reason')}")
+        return result["entity"]
 
     @staticmethod
     def _attach_report_helpers(client: Client) -> None:

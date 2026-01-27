@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import os
 from pyrogram import Client, filters, raw
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
 from config import BOT_TOKEN, OWNER_ID, API_ID, API_HASH
 from database import db
 from report import reporter, SessionValidator
+from resolver import ensure_target_ready
+from sessions import build_clients
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -141,6 +144,40 @@ def main_keyboard(is_admin: bool = False, is_owner: bool = False):
         keyboard.append([InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos")])
     keyboard.append([InlineKeyboardButton("ℹ️ HELP", callback_data="help")])
     return InlineKeyboardMarkup(keyboard)
+
+async def run_startup_health_check(target: str | None) -> None:
+    if not target:
+        logger.info("Health check skipped: no target provided.")
+        return
+    concurrency = int(os.environ.get("SESSION_START_CONCURRENCY", "5"))
+    clients = await build_clients(concurrency=concurrency)
+    accessible: list[str] = []
+    blocked: list[str] = []
+    try:
+        for record in clients:
+            alias = record["alias"]
+            client = record["client"]
+            try:
+                result = await ensure_target_ready(client, target)
+            except Exception as error:
+                blocked.append(f"{alias} error={str(error)[:120]}")
+                continue
+            if result.get("ok"):
+                accessible.append(alias)
+            else:
+                blocked.append(f"{alias} reason={result.get('reason')}")
+        logger.info(
+            "TARGET CHECK DONE: total=%s accessible=%s blocked=%s",
+            len(clients),
+            len(accessible),
+            len(blocked),
+        )
+    finally:
+        for record in clients:
+            try:
+                await record["client"].stop()
+            except Exception:
+                continue
 
 async def build_sudo_panel() -> tuple[str, InlineKeyboardMarkup]:
     sudo_ids = await db.get_sudo_ids()
@@ -767,4 +804,7 @@ async def other_callbacks(client, callback: CallbackQuery):
 
 if __name__ == "__main__":
     print("🚀 STARTLOVE v3.0 - ULTIMATE ✅")
+    health_target = os.environ.get("HEALTH_CHECK_TARGET")
+    if health_target:
+        asyncio.run(run_startup_health_check(health_target))
     app.run()
