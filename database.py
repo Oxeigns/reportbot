@@ -2,6 +2,7 @@ import re
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_URL, DB_NAME
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,21 @@ class Database:
 
     async def get_active_session_count(self) -> int:
         return await self.sessions.count_documents({"status": "active"})
+
+    async def ensure_session_name(self, session: dict) -> Optional[str]:
+        """Ensure a session has a name and persist it."""
+        session_name = session.get("session_name")
+        if session_name:
+            return session_name
+        session_id = session.get("_id")
+        if not session_id:
+            return None
+        session_name = f"session_{session_id}"
+        await self.sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"session_name": session_name}}
+        )
+        return session_name
 
     async def update_session_status(self, session_name: str, status: str, error: str = None):
         """🔥 Update with error info"""

@@ -57,8 +57,19 @@ class MassReporter:
         results = {"active": 0, "failed": 0, "total": len(all_to_validate)}
         
         for session in all_to_validate:
-            session_name = session["session_name"]
-            session_string = session["session_string"]
+            session_name = session.get("session_name")
+            if not session_name:
+                session_name = await db.ensure_session_name(session)
+                if not session_name:
+                    logger.warning("Session missing session_name and _id; skipping validation.")
+                    results["total"] -= 1
+                    continue
+            session_string = session.get("session_string")
+            if not session_string:
+                logger.warning("Session %s missing session_string; marking failed.", session_name)
+                await db.update_session_status(session_name, "failed", "❌ Missing session_string")
+                results["failed"] += 1
+                continue
             
             success, message = await SessionValidator.test_session(session_string, session_name)
             status = "active" if success else "failed"
