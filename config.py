@@ -5,7 +5,7 @@ API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 MONGO_URL = os.environ.get("MONGO_URL")
-DB_NAME = os.environ.get("DB_NAME", "startlove")
+DB_NAME = "startlove"
 
 SUDO_USERS = []
 if sudo_str := os.environ.get("SUDO_USERS"):
