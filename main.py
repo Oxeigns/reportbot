@@ -189,12 +189,34 @@ async def handle_chat_link(client, message):
         return
     chat_link = message.text.strip()
     state["chat_link"] = chat_link
+
+    await message.reply_text("⏳ **Joining chat with active sessions...**")
+    reporter = MassReporter()
+    active_count = await reporter.load_validated_sessions()
+    if active_count == 0:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ])
+        await message.reply_text(
+            "❌ **No active sessions found.**\n\n"
+            "Pehle sessions validate karo.",
+            reply_markup=keyboard
+        )
+        return
+
+    joined = await reporter.join_chat(chat_link)
     state["step"] = "awaiting_target"
+    state["joined_summary"] = {
+        "joined": joined,
+        "total": len(reporter.active_clients)
+    }
     await message.reply_text(
-        f"✅ **Chat Link Saved:** `{chat_link}`\n\n"
+        f"✅ **Chat Joined!**\n\n"
+        f"🟢 Successfully Joined: **{joined}/{len(reporter.active_clients)}**\n"
+        f"📱 Chat: `{chat_link}`\n\n"
         "📝 **Send Target Link** (same chat ka message link)",
         parse_mode="markdown",
-        quote=True,
         disable_web_page_preview=True
     )
 
@@ -225,58 +247,20 @@ async def handle_target_link(client, message):
         return
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Validate & Join", callback_data=f"validate_target:{chat_link}:{target_chat}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
-    
-    state["target_chat"] = target_chat
-    state["step"] = "awaiting_validation"
-    await message.reply_text(
-        f"🔍 **Validating...**\n\n"
-        f"Chat: `{chat_link}`\n"
-        f"Target: `{target_chat}`",
-        reply_markup=keyboard,
-        parse_mode="markdown"
-    )
-
-@app.on_callback_query(filters.regex(r"validate_target:(.*):(.*)"))
-async def validate_target(client, callback):
-    chat_link, target_chat = callback.data.split("validate_target:")[1].split(":", 1)
-    
-    await callback.answer("⏳ Joining chat...")
-    reporter = MassReporter()
-    active_count = await reporter.load_validated_sessions()
-    if active_count == 0:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Validate Sessions", callback_data="validate_sessions")],
-            [InlineKeyboardButton("🔙 Back", callback_data="back")]
-        ])
-        await callback.message.edit_text(
-            "❌ **No active sessions found.**\n\n"
-            "Pehle sessions validate karo.",
-            reply_markup=keyboard
-        )
-        return
-    
-    joined = await reporter.join_chat(chat_link)
-    
-    keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Start Mass Report", callback_data=f"mass_report:{target_chat}")],
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ])
-    
-    await callback.message.edit_text(
-        f"✅ **Chat Joined!**\n\n"
-        f"🟢 Successfully Joined: **{joined}/{len(reporter.active_clients)}**\n"
-        f"📱 Target Chat: `{target_chat}`\n\n"
-        f"**Select Report Type:**",
+
+    state["target_chat"] = target_chat
+    state["step"] = "awaiting_reason"
+    await message.reply_text(
+        f"✅ **Target Confirmed!**\n\n"
+        f"📱 Chat: `{chat_link}`\n"
+        f"🎯 Target: `{target_chat}`\n\n"
+        "**Select Report Type:**",
         reply_markup=keyboard,
         parse_mode="markdown"
     )
-    state = app.user_states.get(callback.from_user.id)
-    if state:
-        state["step"] = "awaiting_reason"
-        state["target_chat"] = target_chat
 
 @app.on_callback_query(filters.regex(r"mass_report:(.*)"))
 async def mass_report_start(client, callback):
