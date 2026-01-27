@@ -128,7 +128,7 @@ async def animate_for_duration(
         stop_event.set()
         await task
 
-def main_keyboard(is_admin: bool = False):
+def main_keyboard(is_admin: bool = False, is_owner: bool = False):
     keyboard = [
         [InlineKeyboardButton("🚀 START REPORT", callback_data="start_report")],
         [InlineKeyboardButton("📊 STATS", callback_data="stats")]
@@ -136,14 +136,36 @@ def main_keyboard(is_admin: bool = False):
     if is_admin:
         keyboard.extend([
             [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
-            [InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos")]
         ])
+    if is_owner:
+        keyboard.append([InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos")])
     keyboard.append([InlineKeyboardButton("ℹ️ HELP", callback_data="help")])
     return InlineKeyboardMarkup(keyboard)
+
+async def build_sudo_panel() -> tuple[str, InlineKeyboardMarkup]:
+    sudo_ids = await db.get_sudo_ids()
+    if sudo_ids:
+        list_text = "\n".join(f"• `{sudo_id}`" for sudo_id in sudo_ids)
+    else:
+        list_text = "• _No sudos added yet._"
+
+    text = (
+        "👥 **SUDO MANAGER**\n\n"
+        f"{list_text}\n\n"
+        f"**TOTAL:** `{len(sudo_ids)}`"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ ADD SUDO", callback_data="sudo_add")],
+        [InlineKeyboardButton("➖ REMOVE SUDO", callback_data="sudo_remove")],
+        [InlineKeyboardButton("🔄 REFRESH", callback_data="manage_sudos")],
+        [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
+    ])
+    return text, keyboard
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     is_admin = await is_authorized(message.from_user.id)
+    is_owner = message.from_user.id == OWNER_ID
     stats = await db.get_stats()
     
     text = f"""🔥 **STARTLOVE v3.0** ✅
@@ -157,7 +179,7 @@ async def start_cmd(client, message):
 👤 **You:** {'🔥 ADMIN' if is_admin else '👤 User'}
 """
     
-    await message.reply_text(text, reply_markup=main_keyboard(is_admin), parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(text, reply_markup=main_keyboard(is_admin, is_owner), parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^stats$"))
 async def stats_callback(client, callback: CallbackQuery):
@@ -211,7 +233,10 @@ async def validate_callback(client, callback: CallbackQuery):
     stats = await db.get_stats()
     
     emoji = "✅" if stats['active'] > 0 else "⚠️"
-    keyboard = main_keyboard(await is_authorized(callback.from_user.id))
+    keyboard = main_keyboard(
+        await is_authorized(callback.from_user.id),
+        callback.from_user.id == OWNER_ID
+    )
     
     text = f"""✅ **VALIDATION DONE!**
 
@@ -326,7 +351,7 @@ async def handle_user_input(client, message):
                 "❌ **MISSING API_ID/API_HASH**\n\n"
                 "Session validation is required before saving.\n"
                 "Set `API_ID` and `API_HASH` in config vars to continue.",
-                reply_markup=main_keyboard(True),
+                reply_markup=main_keyboard(True, user_id == OWNER_ID),
                 parse_mode=ParseMode.MARKDOWN
             )
             del app.user_states[user_id]
@@ -356,13 +381,83 @@ async def handle_user_input(client, message):
             active_count += 1
         
         stats = await db.get_stats()
-        keyboard = main_keyboard(True)
+        keyboard = main_keyboard(True, user_id == OWNER_ID)
         
         await message.reply_text(
             f"✅ **{success_count}/{len(lines)} SAVED!**\n\n"
             f"🟢 `{active_count}` Active | 🚫 `{declined_count}` Declined | ❌ `{failed_count}` Failed\n"
             f"📊 `{stats['active']}` Active | `{stats['total']}` Total",
             reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
+        )
+        del app.user_states[user_id]
+
+    elif state["step"] == "add_sudo":
+        if user_id != OWNER_ID:
+            await message.reply_text("❌ **ONLY OWNER CAN ADD SUDOS**", parse_mode=ParseMode.MARKDOWN)
+            del app.user_states[user_id]
+            return
+        if not text.isdigit():
+            await message.reply_text(
+                "❌ **INVALID USER ID**\n\nSend a numeric user ID.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        target_id = int(text)
+        if target_id == OWNER_ID:
+            await message.reply_text(
+                "⚠️ **OWNER IS ALWAYS ADMIN.**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            del app.user_states[user_id]
+            return
+        if await db.is_sudo(target_id):
+            await message.reply_text(
+                "⚠️ **USER ALREADY SUDO.**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            del app.user_states[user_id]
+            return
+        await db.add_sudo(target_id)
+        text, keyboard = await build_sudo_panel()
+        await message.reply_text(
+            f"✅ **SUDO ADDED:** `{target_id}`\n\n{text}",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        del app.user_states[user_id]
+
+    elif state["step"] == "remove_sudo":
+        if user_id != OWNER_ID:
+            await message.reply_text("❌ **ONLY OWNER CAN REMOVE SUDOS**", parse_mode=ParseMode.MARKDOWN)
+            del app.user_states[user_id]
+            return
+        if not text.isdigit():
+            await message.reply_text(
+                "❌ **INVALID USER ID**\n\nSend a numeric user ID.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        target_id = int(text)
+        if target_id == OWNER_ID:
+            await message.reply_text(
+                "⚠️ **OWNER CANNOT BE REMOVED.**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            del app.user_states[user_id]
+            return
+        if not await db.is_sudo(target_id):
+            await message.reply_text(
+                "⚠️ **USER NOT IN SUDO LIST.**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            del app.user_states[user_id]
+            return
+        await db.remove_sudo(target_id)
+        text, keyboard = await build_sudo_panel()
+        await message.reply_text(
+            f"✅ **SUDO REMOVED:** `{target_id}`\n\n{text}",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
         )
         del app.user_states[user_id]
 
@@ -548,7 +643,7 @@ async def handle_user_input(client, message):
                 on_progress=update_progress
             )
 
-        keyboard = main_keyboard(await is_authorized(user_id))
+        keyboard = main_keyboard(await is_authorized(user_id), user_id == OWNER_ID)
         text = f"""🎉 **REPORT FINISHED!**
 
 🧪 **ATTEMPTS:** `{attempts}`
@@ -628,7 +723,44 @@ async def mass_report_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
     await callback.answer("⚠️ Please follow the new report flow.", show_alert=True)
 
-@app.on_callback_query(filters.regex("^(home|help|manage_sudos)$"))
+@app.on_callback_query(filters.regex("^manage_sudos$"))
+async def manage_sudos_callback(client, callback: CallbackQuery):
+    await safe_answer(callback)
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("❌ Only the owner can manage sudos.", show_alert=True)
+        return
+    text, keyboard = await build_sudo_panel()
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@app.on_callback_query(filters.regex("^sudo_add$"))
+async def sudo_add_callback(client, callback: CallbackQuery):
+    await safe_answer(callback)
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("❌ Only the owner can add sudos.", show_alert=True)
+        return
+    app.user_states[callback.from_user.id] = {"step": "add_sudo"}
+    await callback.message.edit_text(
+        "➕ **ADD SUDO**\n\n"
+        "Send the user ID to grant sudo access.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^sudo_remove$"))
+async def sudo_remove_callback(client, callback: CallbackQuery):
+    await safe_answer(callback)
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("❌ Only the owner can remove sudos.", show_alert=True)
+        return
+    app.user_states[callback.from_user.id] = {"step": "remove_sudo"}
+    await callback.message.edit_text(
+        "➖ **REMOVE SUDO**\n\n"
+        "Send the user ID to revoke sudo access.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@app.on_callback_query(filters.regex("^(home|help)$"))
 async def other_callbacks(client, callback: CallbackQuery):
     await safe_answer(callback)
     await callback.answer("🔥 Coming soon!", show_alert=True)
