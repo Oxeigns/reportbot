@@ -87,7 +87,7 @@ class MassReporter:
                 logging.error(f"Failed to join {chat_link} with {client_data['session_name']}: {e}")
         return joined
     
-    async def mass_report(self, target_chat, reason, description, report_count):
+    async def mass_report(self, target_chat, reason, description, report_count, progress_callback=None):
         success = 0
         failed = 0
         
@@ -114,17 +114,20 @@ class MassReporter:
                 except Exception:
                     return False
         
-        tasks = []
-        for client_data in self.active_clients:
-            task = asyncio.create_task(report_with_client(client_data))
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for result in results:
+        tasks = [
+            asyncio.create_task(report_with_client(client_data))
+            for client_data in self.active_clients
+        ]
+
+        total_clients = len(tasks)
+
+        for task in asyncio.as_completed(tasks):
+            result = await task
             if isinstance(result, bool) and result:
                 success += 1
             else:
                 failed += 1
+            if progress_callback:
+                await progress_callback(success, failed, total_clients)
         
         return success, failed

@@ -179,7 +179,7 @@ async def start_report(client, callback):
     await _prompt_chat_link(callback.message, callback.from_user.id)
     await client.answer_callback_query(callback.id)
 
-@app.on_message(filters.regex(r"https?://t\.me/|^@|^\+"))
+@app.on_message(filters.private & filters.regex(r"https?://t\.me/|^@|^\+"))
 async def handle_chat_link(client, message):
     user_id = message.from_user.id
     state = app.user_states.get(user_id)
@@ -246,13 +246,14 @@ async def handle_target_link(client, message):
         )
         return
     
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Start Mass Report", callback_data=f"mass_report:{target_chat}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
-
     state["target_chat"] = target_chat
     state["step"] = "awaiting_reason"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Spam", callback_data=f"spam:{target_chat}")],
+        [InlineKeyboardButton("Violence", callback_data=f"violence:{target_chat}")],
+        [InlineKeyboardButton("Porn", callback_data=f"porn:{target_chat}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back")]
+    ])
     await message.reply_text(
         f"✅ **Target Confirmed!**\n\n"
         f"📱 Chat: `{chat_link}`\n"
@@ -260,20 +261,6 @@ async def handle_target_link(client, message):
         "**Select Report Type:**",
         reply_markup=keyboard,
         parse_mode="markdown"
-    )
-
-@app.on_callback_query(filters.regex(r"mass_report:(.*)"))
-async def mass_report_start(client, callback):
-    target_chat = callback.data.split("mass_report:")[1]
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Spam", callback_data=f"spam:{target_chat}")],
-        [InlineKeyboardButton("Violence", callback_data=f"violence:{target_chat}")],
-        [InlineKeyboardButton("Porn", callback_data=f"porn:{target_chat}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
-    await callback.message.edit_text(
-        "⚠️ **Select Report Reason:**",
-        reply_markup=keyboard
     )
 
 @app.on_callback_query(filters.regex(r"(spam|violence|porn):(.*)"))
@@ -320,18 +307,12 @@ async def handle_description(client, message):
     description = message.text
     report_state = app.report_state
     
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Start Reporting", callback_data="confirm_report")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ])
-    
     await message.reply_text(
         f"✅ **Ready to Report!**\n\n"
         f"🎯 Target: `{report_state['target']}`\n"
         f"⚠️ Reason: `{report_state['reason_name']}`\n"
         f"📝 Description: `{description[:50]}...`\n\n"
         f"**Enter Number of Reports per session:**",
-        reply_markup=keyboard,
         parse_mode="markdown"
     )
     app.report_description = description
@@ -349,7 +330,7 @@ async def handle_report_count(client, message):
     state = app.report_state
     description = getattr(app, 'report_description', 'Mass Report')
     
-    await message.reply_text("⏳ **Starting Mass Report...**")
+    status_message = await message.reply_text("⏳ **Starting Mass Report...**")
     
     reporter = MassReporter()
     active_count = await reporter.load_validated_sessions()
@@ -365,11 +346,33 @@ async def handle_report_count(client, message):
         )
         return
     
+    total_sessions = len(reporter.active_clients)
+    last_update = 0.0
+
+    async def update_panel(success_count, failed_count, total_count):
+        nonlocal last_update
+        now = asyncio.get_event_loop().time()
+        should_update = (now - last_update) > 1.0 or (success_count + failed_count) == total_count
+        if not should_update:
+            return
+        last_update = now
+        await status_message.edit_text(
+            "📊 **Live Reporting Panel**\n\n"
+            f"🟢 **Success:** {success_count}\n"
+            f"🔴 **Failed:** {failed_count}\n"
+            f"📌 **Total Sessions:** {total_count}\n"
+            f"🧾 **Reports per session:** {count}\n",
+            parse_mode="markdown"
+        )
+
+    await update_panel(0, 0, total_sessions)
+
     success, failed = await reporter.mass_report(
         state['target'], 
         state['reason'], 
         description, 
-        count
+        count,
+        progress_callback=update_panel
     )
     
     keyboard = InlineKeyboardMarkup([
