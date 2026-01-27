@@ -3,14 +3,18 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
-from config import BOT_TOKEN, OWNER_ID
+from config import BOT_TOKEN, OWNER_ID, API_ID, API_HASH
 from database import db
 from report import reporter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Client("startlove_bot", bot_token=BOT_TOKEN)
+client_kwargs = {"bot_token": BOT_TOKEN}
+if API_ID and API_HASH:
+    client_kwargs.update({"api_id": API_ID, "api_hash": API_HASH})
+
+app = Client("startlove_bot", **client_kwargs)
 app.user_states = {}
 
 async def is_authorized(user_id: int) -> bool:
