@@ -17,6 +17,18 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
 )
+app.user_states = {}
+
+
+def _get_chat_identifier(link):
+    if link.startswith("https://t.me/"):
+        trimmed = link.split("https://t.me/")[1]
+    else:
+        trimmed = link
+    trimmed = trimmed.lstrip("@")
+    trimmed = trimmed.split("?")[0]
+    trimmed = trimmed.strip("/")
+    return trimmed
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
@@ -123,6 +135,7 @@ async def start_report(client, callback):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ])
+    app.user_states[callback.from_user.id] = {"step": "awaiting_chat"}
     await callback.message.edit_text(
         "🔗 **Send Chat Link** (Channel/Group)\n\n"
         "Example: `@channelname` or `https://t.me/channelname`\n"
@@ -133,40 +146,56 @@ async def start_report(client, callback):
 
 @app.on_message(filters.regex(r"https?://t\.me/|^@|^\+"))
 async def handle_chat_link(client, message):
+    user_id = message.from_user.id
+    state = app.user_states.get(user_id)
+    if not state or state.get("step") != "awaiting_chat":
+        return
+    if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
+        return
     chat_link = message.text.strip()
-    message.reply_text(
+    state["chat_link"] = chat_link
+    state["step"] = "awaiting_target"
+    await message.reply_text(
         f"✅ **Chat Link Saved:** `{chat_link}`\n\n"
         "📝 **Send Target Link** (same chat ka message link)",
         parse_mode="markdown",
         quote=True,
         disable_web_page_preview=True
     )
-    app.chat_link = chat_link
-    app.waiting_target = message.from_user.id
 
 @app.on_message(filters.private & filters.regex(r"https?://t\.me/.*\d+"))
 async def handle_target_link(client, message):
-    if not hasattr(app, 'waiting_target') or app.waiting_target != message.from_user.id:
+    user_id = message.from_user.id
+    state = app.user_states.get(user_id)
+    if not state or state.get("step") != "awaiting_target":
+        return
+    if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
         return
         
     target_link = message.text.strip()
-    chat_link = getattr(app, 'chat_link', None)
+    chat_link = state.get("chat_link")
     
     if not chat_link:
         await message.reply("❌ Pehle chat link bhejo!")
         return
     
-    # Extract chat ID from target link
-    if target_link.startswith("https://t.me/"):
-        target_chat = target_link.split("/")[-2] if len(target_link.split("/")) > 4 else target_link
-    else:
-        target_chat = target_link
+    target_chat = _get_chat_identifier(target_link)
+    chat_identifier = _get_chat_identifier(chat_link)
+    if chat_identifier != target_chat:
+        await message.reply_text(
+            "❌ **Target link same chat ka nahi hai.**\n\n"
+            "Sahi chat ka message link bhejo.",
+            parse_mode="markdown"
+        )
+        return
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Validate & Join", callback_data=f"validate_target:{chat_link}:{target_chat}")],
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ])
     
+    state["target_chat"] = target_chat
+    state["step"] = "awaiting_validation"
     await message.reply_text(
         f"🔍 **Validating...**\n\n"
         f"Chat: `{chat_link}`\n"
@@ -198,6 +227,10 @@ async def validate_target(client, callback):
         reply_markup=keyboard,
         parse_mode="markdown"
     )
+    state = app.user_states.get(callback.from_user.id)
+    if state:
+        state["step"] = "awaiting_reason"
+        state["target_chat"] = target_chat
 
 @app.on_callback_query(filters.regex(r"mass_report:(.*)"))
 async def mass_report_start(client, callback):
@@ -242,14 +275,20 @@ async def report_reason(client, callback):
         "reason_name": reason_name,
         "user_id": callback.from_user.id
     }
+    state = app.user_states.get(callback.from_user.id)
+    if state:
+        state["step"] = "awaiting_description"
 
 @app.on_message(filters.private & filters.text)
 async def handle_description(client, message):
+    user_state = app.user_states.get(message.from_user.id)
+    if not user_state or user_state.get("step") != "awaiting_description":
+        return
     if not hasattr(app, 'report_state') or app.report_state['user_id'] != message.from_user.id:
         return
     
     description = message.text
-    state = app.report_state
+    report_state = app.report_state
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Start Reporting", callback_data="confirm_report")],
@@ -258,17 +297,21 @@ async def handle_description(client, message):
     
     await message.reply_text(
         f"✅ **Ready to Report!**\n\n"
-        f"🎯 Target: `{state['target']}`\n"
-        f"⚠️ Reason: `{state['reason_name']}`\n"
+        f"🎯 Target: `{report_state['target']}`\n"
+        f"⚠️ Reason: `{report_state['reason_name']}`\n"
         f"📝 Description: `{description[:50]}...`\n\n"
         f"**Enter Number of Reports per session:**",
         reply_markup=keyboard,
         parse_mode="markdown"
     )
     app.report_description = description
+    user_state["step"] = "awaiting_count"
 
 @app.on_message(filters.regex(r"^\d+$") & filters.private)
 async def handle_report_count(client, message):
+    state = app.user_states.get(message.from_user.id)
+    if not state or state.get("step") != "awaiting_count":
+        return
     if not hasattr(app, 'report_state'):
         return
     
@@ -302,6 +345,7 @@ async def handle_report_count(client, message):
         reply_markup=keyboard,
         parse_mode="markdown"
     )
+    app.user_states.pop(message.from_user.id, None)
 
 @app.on_callback_query(filters.regex(r"add_sudo|remove_sudo"))
 async def sudo_manager(client, callback):
