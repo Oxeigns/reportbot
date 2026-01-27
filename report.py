@@ -15,26 +15,40 @@ class MassReporter:
     async def load_sessions(self):
         sessions = await db.get_all_sessions()
         self.clients = []
+        self.active_clients = []
         for session in sessions:
+            session_name = session.get("session_name")
+            session_string = session.get("session_string")
+            if not session_name or not session_string:
+                logging.warning(
+                    "Skipping session without required fields: %s",
+                    session.get("_id", "unknown"),
+                )
+                continue
             try:
                 client = Client(
-                    session["session_name"],
+                    session_name,
                     api_id=API_ID,
                     api_hash=API_HASH,
                     in_memory=True
                 )
-                client.session_string = session["session_string"]
+                client.session_string = session_string
                 await client.start()
                 me = await client.get_me()
                 self.active_clients.append({
                     "client": client,
-                    "session_name": session["session_name"],
+                    "session_name": session_name,
                     "user_id": me.id
                 })
-                await db.validate_session(session["session_name"], "active")
+                await db.validate_session(session_name, "active")
             except Exception as e:
-                await db.validate_session(session["session_name"], "failed")
-                logging.error(f"Session {session['session_name']} failed: {e}")
+                if session_name:
+                    await db.validate_session(session_name, "failed")
+                logging.error(
+                    "Session %s failed: %s",
+                    session_name or "unknown",
+                    e,
+                )
         return len(self.active_clients)
     
     async def join_chat(self, chat_link):
