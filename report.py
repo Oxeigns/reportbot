@@ -202,6 +202,7 @@ class MassReporter:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
+        message_ids: list[int] = []
 
         results = {
             "success": 0,
@@ -216,7 +217,12 @@ class MassReporter:
             for client_data in clients:
                 client = client_data["client"]
                 ok = await self._report_with_retries(
-                    lambda: client.report_chat(target_chat, reason, description=description),
+                    lambda: client.report_message(
+                        target_chat,
+                        message_ids,
+                        reason,
+                        description=description
+                    ),
                     client_data["name"]
                 )
                 if ok:
