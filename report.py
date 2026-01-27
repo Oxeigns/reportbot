@@ -1,0 +1,92 @@
+import asyncio
+from pyrogram import Client
+from pyrogram.errors import FloodWait, PeerFlood, ChatAdminRequired
+from config import API_ID, API_HASH
+from database import db
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+class MassReporter:
+    def __init__(self):
+        self.clients = []
+        self.active_clients = []
+        
+    async def load_sessions(self):
+        sessions = await db.get_all_sessions()
+        self.clients = []
+        for session in sessions:
+            try:
+                client = Client(
+                    session["session_name"],
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    in_memory=True
+                )
+                client.session_string = session["session_string"]
+                await client.start()
+                me = await client.get_me()
+                self.active_clients.append({
+                    "client": client,
+                    "session_name": session["session_name"],
+                    "user_id": me.id
+                })
+                await db.validate_session(session["session_name"], "active")
+            except Exception as e:
+                await db.validate_session(session["session_name"], "failed")
+                logging.error(f"Session {session['session_name']} failed: {e}")
+        return len(self.active_clients)
+    
+    async def join_chat(self, chat_link):
+        joined = 0
+        for client_data in self.active_clients:
+            try:
+                client = client_data["client"]
+                await client.join_chat(chat_link)
+                joined += 1
+                await asyncio.sleep(1)
+            except Exception as e:
+                logging.error(f"Failed to join {chat_link} with {client_data['session_name']}: {e}")
+        return joined
+    
+    async def mass_report(self, target_chat, reason, description, report_count):
+        success = 0
+        failed = 0
+        
+        semaphore = asyncio.Semaphore(5)  # Limit concurrent reports
+        
+        async def report_with_client(client_data):
+            async with semaphore:
+                client = client_data["client"]
+                try:
+                    for i in range(report_count):
+                        await client.report_chat(
+                            chat_id=target_chat,
+                            reason=reason,
+                            message_ids=[],
+                            description=description
+                        )
+                        await asyncio.sleep(2)
+                    return True
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                    return True
+                except (PeerFlood, ChatAdminRequired):
+                    return False
+                except Exception:
+                    return False
+        
+        tasks = []
+        for client_data in self.active_clients:
+            task = asyncio.create_task(report_with_client(client_data))
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results:
+            if isinstance(result, bool) and result:
+                success += 1
+            else:
+                failed += 1
+        
+        return success, failed
