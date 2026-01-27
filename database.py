@@ -32,12 +32,14 @@ class Database:
         
         await self.sessions.update_one(
             {"session_name": session_name},
-            {"$set": {
-                "session_string": session_string,
-                "status": "pending",
-                "added_at": {"$currentDate": True},
-                "last_error": None
-            }},
+            {
+                "$set": {
+                    "session_string": session_string,
+                    "status": "pending",
+                    "last_error": None
+                },
+                "$currentDate": {"added_at": True}
+            },
             upsert=True
         )
         return True, f"✅ Added: {session_name}"
@@ -49,7 +51,14 @@ class Database:
         return await self.sessions.find({"status": "active"}).to_list(None)
 
     async def get_pending_sessions(self):
-        return await self.sessions.find({"status": "pending"}).to_list(None)
+        return await self.sessions.find({
+            "$or": [
+                {"status": "pending"},
+                {"status": {"$exists": False}},
+                {"status": None},
+                {"status": ""}
+            ]
+        }).to_list(None)
 
     async def get_failed_sessions(self):
         return await self.sessions.find({"status": "failed"}).to_list(None)
@@ -62,18 +71,25 @@ class Database:
 
     async def update_session_status(self, session_name: str, status: str, error: str = None):
         """🔥 Update with error info"""
-        update_data = {"status": status, "validated_at": {"$currentDate": True}}
+        update_data = {"status": status}
         if error:
             update_data["last_error"] = error
         await self.sessions.update_one(
             {"session_name": session_name},
-            {"$set": update_data}
+            {"$set": update_data, "$currentDate": {"validated_at": True}}
         )
 
     async def get_stats(self):
         total = await self.get_total_session_count()
         active = await self.get_active_session_count()
-        pending = await self.sessions.count_documents({"status": "pending"})
+        pending = await self.sessions.count_documents({
+            "$or": [
+                {"status": "pending"},
+                {"status": {"$exists": False}},
+                {"status": None},
+                {"status": ""}
+            ]
+        })
         failed = await self.sessions.count_documents({"status": "failed"})
         sudo_count = await self.sudos.count_documents({})
         
