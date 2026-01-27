@@ -2,7 +2,7 @@ import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.enums import ParseMode, ChatType
+from pyrogram.enums import ParseMode
 from config import BOT_TOKEN, OWNER_ID
 from database import db
 from report import reporter
@@ -41,15 +41,15 @@ async def start_cmd(client, message):
     is_admin = await is_authorized(message.from_user.id)
     stats = await db.get_stats()
     
-    text = f"""🔥 **STARTLOVE MASS REPORTER** v2.0 ✅
+    text = f"""🔥 **STARTLOVE v3.0** ✅
 
 📊 **STATS:**
-• Total Sessions: `{stats['total']}`
-• Active: `{stats['active']}` ✅
-• Pending: `{stats['pending']}`
-• Failed: `{stats['failed']}` ❌
+• `{stats['active']}` Active ✅
+• `{stats['pending']}` Pending ⏳
+• `{stats['failed']}` Failed ❌
+• `{stats['total']}` Total 📈
 
-👤 **Status:** {'🔥 ADMIN' if is_admin else '👤 User'}
+👤 **You:** {'🔥 ADMIN' if is_admin else '👤 User'}
 """
     
     await message.reply_text(text, reply_markup=main_keyboard(is_admin), parse_mode=ParseMode.MARKDOWN)
@@ -66,7 +66,7 @@ async def stats_callback(client, callback: CallbackQuery):
     
     text = f"""📊 **LIVE STATS** 🔥
 
-🔥 **ACTIVE:** `{stats['active']}`
+✅ **ACTIVE:** `{stats['active']}`
 ⏳ **PENDING:** `{stats['pending']}`
 ❌ **FAILED:** `{stats['failed']}`
 📈 **TOTAL:** `{stats['total']}`
@@ -77,22 +77,21 @@ async def stats_callback(client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex("^validate_all$"))
 async def validate_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
-    await callback.message.edit_text("🔄 **VALIDATING SESSIONS...**")
+    await callback.message.edit_text("🔄 **VALIDATING... (30s)**")
     
     results = await reporter.validate_all_sessions()
     stats = await db.get_stats()
     
+    emoji = "✅" if stats['active'] > 0 else "⚠️"
     keyboard = main_keyboard(await is_authorized(callback.from_user.id))
     
-    text = f"""✅ **VALIDATION COMPLETE!**
+    text = f"""✅ **VALIDATION DONE!**
 
-✅ **ACTIVE:** `{results['active']}`
-❌ **FAILED:** `{results['failed']}`
-📊 **TOTAL CHECKED:** `{results['total']}`
+{emoji} **ACTIVE:** `{results['active']}` ✅
+❌ **FAILED:** `{results['failed']}` ❌
+📊 **CHECKED:** `{results['total']}`
 
-**CURRENT STATS:**
-• Active: `{stats['active']}` ✅
-• Failed: `{stats['failed']}` ❌
+**READY TO REPORT!** 🔥
 """
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
@@ -103,10 +102,11 @@ async def add_session_callback(client, callback: CallbackQuery):
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 MAIN", callback_data="home")]])
     await callback.message.edit_text(
-        "📝 **SEND SESSION STRINGS:**\n\n"
+        "📝 **PASTE SESSIONS:**\n\n"
         "• **One per line**\n"
-        "• **Pyrogram v2 format** (starts with `1` or `BV`)\n\n"
-        "`1BV...`\n`1BV...`\n`1BV...`",
+        "• **Pyrogram v2** (`1BV...`)\n\n"
+        "`1BVABC...`\n`1BVDEF...`\n`1BVXYZ...`\n\n"
+        "**Send now!**",
         reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
     )
 
@@ -117,10 +117,10 @@ async def start_report_callback(client, callback: CallbackQuery):
     
     if stats['active'] == 0:
         await callback.message.edit_text(
-            "❌ **NO ACTIVE SESSIONS!**\n\n"
-            "🔄 **First:** ADD → VALIDATE",
+            "❌ **0 ACTIVE SESSIONS!**\n\n"
+            "**1️⃣ ADD SESSION**\n**2️⃣ VALIDATE ALL**",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
+                [InlineKeyboardButton("➕ ADD", callback_data="add_session")],
                 [InlineKeyboardButton("🔄 VALIDATE", callback_data="validate_all")],
                 [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
             ])
@@ -129,9 +129,9 @@ async def start_report_callback(client, callback: CallbackQuery):
     
     app.user_states[callback.from_user.id] = {"step": "target_chat"}
     await callback.message.edit_text(
-        f"✅ **{stats['active']} ACTIVE SESSIONS READY!** 🔥\n\n"
-        "🔗 **SEND TARGET CHAT:**\n\n"
-        "`@channelname`\n`https://t.me/channelname`",
+        f"✅ **{stats['active']} READY!** 🔥\n\n"
+        "🔗 **TARGET CHAT:**\n\n"
+        "`@username`\n`t.me/username`",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -148,8 +148,8 @@ async def handle_user_input(client, message):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         success_count = 0
         
-        for session in lines:
-            ok, msg = await db.add_session(session)
+        for i, session in enumerate(lines):
+            ok, msg = await db.add_session(session, f"sess_{i+1}")
             if ok:
                 success_count += 1
         
@@ -157,13 +157,13 @@ async def handle_user_input(client, message):
         keyboard = main_keyboard(True)
         
         await message.reply_text(
-            f"✅ **Added {success_count}/{len(lines)} sessions!**\n\n"
-            f"📊 **Active:** `{stats['active']}` | **Total:** `{stats['total']}`\n\n"
-            "**🔄 Click VALIDATE ALL**",
+            f"✅ **{success_count}/{len(lines)} ADDED!**\n\n"
+            f"📊 `{stats['active']}` Active | `{stats['total']}` Total\n\n"
+            "**🔄 VALIDATE NOW** 👇",
             reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
         )
         del app.user_states[user_id]
-    
+
     elif state["step"] == "target_chat":
         chat_id = get_chat_id(text)
         app.user_states[user_id] = {"step": "reporting", "target": chat_id}
@@ -172,22 +172,25 @@ async def handle_user_input(client, message):
         joined = await reporter.join_target_chat(chat_id)
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 MASS REPORT", callback_data=f"mass_report_{chat_id}")],
+            [InlineKeyboardButton("🚀 REPORT NOW", callback_data=f"mass_report_{chat_id}")],
             [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
         ])
         
         await message.reply_text(
             f"✅ **JOINED:** {joined}/{len(reporter.active_clients)}\n\n"
-            f"🎯 **Target:** `{chat_id}`\n\n"
-            "**Ready to MASS REPORT!** 🔥",
+            f"🎯 **{chat_id}** ✅\n\n"
+            "**Click REPORT NOW!** 🔥",
             reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
         )
 
 def get_chat_id(link: str) -> str:
-    link = link.split("?")[0]
+    link = link.split("?")[0].strip()
+    if "/joinchat/" in link:
+        return link.split("/joinchat/")[1]
     if "t.me/" in link:
         parts = link.split("t.me/")[1].split("/")
-        return f"@{parts[0]}" if parts[0].startswith("@") else parts[0]
+        username = parts[0].strip()
+        return f"@{username}" if not username.startswith("@") else username
     return link.lstrip("@")
 
 @app.on_callback_query(filters.regex("^mass_report_"))
@@ -195,30 +198,26 @@ async def mass_report_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
     chat_id = callback.data.split("_", 2)[2]
     
-    await callback.message.edit_text("🔥 **MASS REPORTING...**")
+    await callback.message.edit_text("🔥 **REPORTING...**")
     results = await reporter.mass_report_chat(chat_id)
     
     keyboard = main_keyboard(await is_authorized(callback.from_user.id))
     
-    text = f"""✅ **REPORT COMPLETE!** 🎉
+    text = f"""🎉 **REPORT FINISHED!**
 
 ✅ **SUCCESS:** `{results['success']}`
 ❌ **FAILED:** `{results['failed']}`
 📊 **TOTAL:** `{results['total']}`
 
-🎯 **Target:** `{chat_id}`
+🎯 **{chat_id}**
 """
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-@app.on_callback_query(filters.regex("^(home|help)$"))
-async def home_callback(client, callback: CallbackQuery):
+@app.on_callback_query(filters.regex("^(home|help|manage_sudos)$"))
+async def other_callbacks(client, callback: CallbackQuery):
     await safe_answer(callback)
-    is_admin = await is_authorized(callback.from_user.id)
-    await callback.message.edit_text(
-        "🏠 **MAIN MENU**", reply_markup=main_keyboard(is_admin),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await callback.answer("🔥 Coming soon!", show_alert=True)
 
 if __name__ == "__main__":
-    print("🚀 STARTLOVE ULTIMATE BOT LAUNCHING...")
+    print("🚀 STARTLOVE v3.0 - ULTIMATE ✅")
     app.run()
