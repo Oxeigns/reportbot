@@ -5,7 +5,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 from pyrogram.enums import ParseMode
 from config import BOT_TOKEN, OWNER_ID, API_ID, API_HASH
 from database import db
-from report import reporter
+from report import reporter, SessionValidator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ def main_keyboard(is_admin: bool = False):
     if is_admin:
         keyboard.extend([
             [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
-            [InlineKeyboardButton("🔄 VALIDATE ALL", callback_data="validate_all")],
             [InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos")]
         ])
     keyboard.append([InlineKeyboardButton("ℹ️ HELP", callback_data="help")])
@@ -123,23 +122,43 @@ async def add_session_callback(client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex("^start_report$"))
 async def start_report_callback(client, callback: CallbackQuery):
     await safe_answer(callback)
-    stats = await db.get_stats()
-    
-    if stats['active'] == 0:
+    await callback.message.edit_text(
+        "🚀 **START REPORTING**\n\n"
+        "Choose an option below:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ ADD NEW SESSION", callback_data="add_session")],
+            [InlineKeyboardButton("✅ REPORT WITH SAVED SESSIONS", callback_data="report_saved")],
+            [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
+        ])
+    )
+
+@app.on_callback_query(filters.regex("^report_saved$"))
+async def report_saved_callback(client, callback: CallbackQuery):
+    await safe_answer(callback)
+    if not reporter.has_api_credentials():
         await callback.message.edit_text(
-            "❌ **0 ACTIVE SESSIONS!**\n\n"
-            "**1️⃣ ADD SESSION**\n**2️⃣ VALIDATE ALL**",
+            "❌ **MISSING API_ID/API_HASH**\n\n"
+            "Set `API_ID` and `API_HASH` in config vars before reporting."
+        )
+        return
+
+    await reporter.validate_all_sessions()
+    stats = await db.get_stats()
+
+    if stats["active"] < 1:
+        await callback.message.edit_text(
+            "❌ **NO ACTIVE SESSIONS FOUND!**\n\n"
+            "➕ Add at least 1 session to continue.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ ADD", callback_data="add_session")],
-                [InlineKeyboardButton("🔄 VALIDATE", callback_data="validate_all")],
+                [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
                 [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
             ])
         )
         return
-    
+
     app.user_states[callback.from_user.id] = {"step": "target_chat"}
     await callback.message.edit_text(
-        f"✅ **{stats['active']} READY!** 🔥\n\n"
+        f"✅ **{stats['active']} SESSIONS READY!** 🔥\n\n"
         "🔗 **TARGET CHAT:**\n\n"
         "`@username`\n`t.me/username`",
         parse_mode=ParseMode.MARKDOWN
@@ -157,19 +176,36 @@ async def handle_user_input(client, message):
     if state["step"] == "add_session":
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         success_count = 0
+        active_count = 0
+        failed_count = 0
+        pending_count = 0
+        base_count = await db.get_total_session_count()
         
         for i, session in enumerate(lines):
-            ok, msg = await db.add_session(session, f"sess_{i+1}")
-            if ok:
-                success_count += 1
+            session_name = f"session_{base_count + i + 1}"
+            ok, msg = await db.add_session(session, session_name)
+            if not ok:
+                failed_count += 1
+                continue
+            success_count += 1
+            if reporter.has_api_credentials():
+                validated, error = await SessionValidator.test_session(session, session_name)
+                status = "active" if validated else "failed"
+                await db.update_session_status(session_name, status, None if validated else error)
+                if validated:
+                    active_count += 1
+                else:
+                    failed_count += 1
+            else:
+                pending_count += 1
         
         stats = await db.get_stats()
         keyboard = main_keyboard(True)
         
         await message.reply_text(
             f"✅ **{success_count}/{len(lines)} ADDED!**\n\n"
-            f"📊 `{stats['active']}` Active | `{stats['total']}` Total\n\n"
-            "**🔄 VALIDATE NOW** 👇",
+            f"🟢 `{active_count}` Active | ❌ `{failed_count}` Failed | ⏳ `{pending_count}` Pending\n"
+            f"📊 `{stats['active']}` Active | `{stats['total']}` Total",
             reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
         )
         del app.user_states[user_id]
