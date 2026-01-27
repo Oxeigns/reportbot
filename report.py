@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from pyrogram import Client
+from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
@@ -136,7 +136,7 @@ class MassReporter:
         results = await asyncio.gather(*tasks)
         return sum(results)
 
-    async def mass_report_chat(self, target_chat: str, reason: int = 1, description: str = "") -> dict:
+    async def mass_report_chat(self, target_chat: str, reason, description: str = "") -> dict:
         """🔥 Mass report"""
         if not self.active_clients:
             return {"success": 0, "failed": 0, "total": 0}
@@ -148,11 +148,14 @@ class MassReporter:
             async with semaphore:
                 client = client_data["client"]
                 try:
-                    await client.report_chat(
-                        chat_id=target_chat,
-                        reason=reason,
-                        message_ids=[],
-                        description=description[:500]
+                    await client.invoke(
+                        raw.functions.messages.Report(
+                            peer=await client.resolve_peer(target_chat),
+                            reason=reason,
+                            message="",
+                            id=[],
+                            option=b""
+                        )
                     )
                     await asyncio.sleep(1)
                     return True
