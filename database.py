@@ -24,6 +24,20 @@ class Database:
             {"session_name": session_name},
             {"$set": {"status": status}}
         )
+
+    async def normalize_session(self, session_id, session_name=None, session_string=None):
+        if not session_id:
+            return
+        updates = {}
+        if session_name:
+            updates["session_name"] = session_name
+        if session_string:
+            updates["session_string"] = session_string
+        if updates:
+            await self.sessions.update_one(
+                {"_id": session_id},
+                {"$set": updates},
+            )
     
     async def get_active_session_count(self):
         return await self.sessions.count_documents({"status": "active"})

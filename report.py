@@ -17,8 +17,19 @@ class MassReporter:
         self.clients = []
         self.active_clients = []
         for session in sessions:
-            session_name = session.get("session_name")
-            session_string = session.get("session_string")
+            session_id = session.get("_id")
+            session_name = session.get("session_name") or session.get("name")
+            session_string = (
+                session.get("session_string")
+                or session.get("session")
+                or session.get("string")
+                or session.get("session_str")
+            )
+            if not session_name and session_string and session_id:
+                session_name = f"session_{session_id}"
+                await db.normalize_session(session_id, session_name=session_name)
+            if session_id and session_string and session.get("session_string") != session_string:
+                await db.normalize_session(session_id, session_string=session_string)
             if not session_name or not session_string:
                 logging.warning(
                     "Skipping session without required fields: %s",
