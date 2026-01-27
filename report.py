@@ -217,9 +217,8 @@ class MassReporter:
             for client_data in clients:
                 client = client_data["client"]
                 ok = await self._report_with_retries(
-                    lambda: client.report_message(
+                    lambda: client.report_chat(
                         target_chat,
-                        message_ids,
                         reason,
                         description=description
                     ),
