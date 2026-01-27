@@ -1,4 +1,7 @@
+import re
+
 from pyrogram import Client, filters, types
+from pyrogram.errors.exceptions.bad_request_400 import QueryIdInvalid
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN, OWNER_ID, SUDO_USERS, API_ID, API_HASH
 from database import db
@@ -29,6 +32,23 @@ def _get_chat_identifier(link):
     trimmed = trimmed.split("?")[0]
     trimmed = trimmed.strip("/")
     return trimmed
+
+
+def _looks_like_chat_link(link):
+    return bool(re.match(r"^(?:https?://)?t\.me/|^@|^\+", link, flags=re.IGNORECASE))
+
+
+def _looks_like_message_link(link):
+    if not re.match(r"^(?:https?://)?t\.me/", link, flags=re.IGNORECASE):
+        return False
+    return bool(re.search(r"/\d+(?:\?.*)?$", link))
+
+
+async def _safe_answer_callback(callback):
+    try:
+        await callback.answer()
+    except QueryIdInvalid as exc:
+        logging.warning("Callback query expired before answering: %s", exc)
 
 
 async def _prompt_chat_link(message, user_id):
@@ -67,6 +87,7 @@ async def start(client, message):
 
 @app.on_callback_query(filters.regex("report_start"))
 async def report_start(client, callback):
+    await _safe_answer_callback(callback)
     total_sessions = await db.get_total_session_count()
     active_sessions = await db.get_active_session_count()
     if total_sessions == 0:
@@ -85,11 +106,9 @@ async def report_start(client, callback):
             message_text,
             reply_markup=keyboard
         )
-        await client.answer_callback_query(callback.id)
         return
     elif active_sessions > 0:
         await _prompt_chat_link(callback.message, callback.from_user.id)
-        await client.answer_callback_query(callback.id)
         return
 
     await callback.message.edit_text("⏳ **Validating sessions...**")
@@ -105,11 +124,9 @@ async def report_start(client, callback):
             "Pehle sessions validate karo.",
             reply_markup=keyboard
         )
-        await client.answer_callback_query(callback.id)
         return
 
     await _prompt_chat_link(callback.message, callback.from_user.id)
-    await client.answer_callback_query(callback.id)
 
 @app.on_message(filters.private & ~filters.command("start"))
 async def handle_sessions(client, message):
@@ -163,6 +180,7 @@ async def validate_sessions(client, callback):
 
 @app.on_callback_query(filters.regex("start_report"))
 async def start_report(client, callback):
+    await _safe_answer_callback(callback)
     active_sessions = await db.get_active_session_count()
     if active_sessions == 0:
         keyboard = InlineKeyboardMarkup([
@@ -174,12 +192,10 @@ async def start_report(client, callback):
             "Pehle sessions validate karo.",
             reply_markup=keyboard
         )
-        await client.answer_callback_query(callback.id)
         return
     await _prompt_chat_link(callback.message, callback.from_user.id)
-    await client.answer_callback_query(callback.id)
 
-@app.on_message(filters.private & filters.regex(r"https?://t\.me/|^@|^\+"))
+@app.on_message(filters.private & filters.text)
 async def handle_chat_link(client, message):
     user_id = message.from_user.id
     state = app.user_states.get(user_id)
@@ -188,6 +204,14 @@ async def handle_chat_link(client, message):
     if not (user_id == OWNER_ID or user_id in SUDO_USERS or await db.is_sudo(user_id)):
         return
     chat_link = message.text.strip()
+    if not _looks_like_chat_link(chat_link):
+        await message.reply_text(
+            "❌ **Valid chat link bhejo.**\n\n"
+            "Example: `@channelname` ya `https://t.me/channelname`",
+            parse_mode="markdown",
+            disable_web_page_preview=True
+        )
+        return
     state["chat_link"] = chat_link
 
     await message.reply_text("⏳ **Joining chat with active sessions...**")
@@ -220,7 +244,7 @@ async def handle_chat_link(client, message):
         disable_web_page_preview=True
     )
 
-@app.on_message(filters.private & filters.regex(r"https?://t\.me/.*\d+"))
+@app.on_message(filters.private & filters.text)
 async def handle_target_link(client, message):
     user_id = message.from_user.id
     state = app.user_states.get(user_id)
@@ -230,6 +254,14 @@ async def handle_target_link(client, message):
         return
         
     target_link = message.text.strip()
+    if not _looks_like_message_link(target_link):
+        await message.reply_text(
+            "❌ **Valid message link bhejo.**\n\n"
+            "Example: `https://t.me/channelname/123`",
+            parse_mode="markdown",
+            disable_web_page_preview=True
+        )
+        return
     chat_link = state.get("chat_link")
     
     if not chat_link:
@@ -437,6 +469,8 @@ async def back(client, callback):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚨 Send Report", callback_data="report_start")]
     ])
+
+    app.user_states.pop(callback.from_user.id, None)
     
     user_id = callback.from_user.id
     if user_id == OWNER_ID or user_id in SUDO_USERS:
