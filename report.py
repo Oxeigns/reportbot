@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import types
 from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
@@ -41,6 +42,36 @@ class SessionValidator:
 class MassReporter:
     def __init__(self):
         self.active_clients = []
+    
+    @staticmethod
+    def _attach_report_helpers(client: Client) -> None:
+        if not hasattr(client, "report_message"):
+            async def report_message(self, target_chat, message_ids, reason, description: str = ""):
+                await self.invoke(
+                    raw.functions.messages.Report(
+                        peer=await self.resolve_peer(target_chat),
+                        reason=reason,
+                        message=description or "",
+                        id=message_ids,
+                        option=b""
+                    )
+                )
+
+            client.report_message = types.MethodType(report_message, client)
+
+        if not hasattr(client, "report_chat"):
+            async def report_chat(self, target_chat, reason, description: str = ""):
+                await self.invoke(
+                    raw.functions.messages.Report(
+                        peer=await self.resolve_peer(target_chat),
+                        reason=reason,
+                        message=description or "",
+                        id=[],
+                        option=b""
+                    )
+                )
+
+            client.report_chat = types.MethodType(report_chat, client)
 
     def has_api_credentials(self) -> bool:
         return bool(API_ID and API_HASH and API_ID != 0)
@@ -102,6 +133,7 @@ class MassReporter:
                     no_updates=True
                 )
                 await client.start()
+                self._attach_report_helpers(client)
                 self.active_clients.append({
                     "client": client,
                     "name": session["session_name"]
@@ -141,31 +173,21 @@ class MassReporter:
         target_chat: str,
         reason,
         description: str = "",
-        max_reports: int | None = None,
-        retries: int = 1
+        attempts: int = 1,
+        on_progress=None
     ) -> dict:
         """🔥 Mass report"""
         if not self.active_clients:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
-        if max_reports is not None:
-            clients = clients[:max_reports]
 
-        results = {"success": 0, "failed": 0, "total": len(clients)}
+        results = {"success": 0, "failed": 0, "total": 0}
         
         async def report_one(client_data):
             client = client_data["client"]
             try:
-                await client.invoke(
-                    raw.functions.messages.Report(
-                        peer=await client.resolve_peer(target_chat),
-                        reason=reason,
-                        message=description or "",
-                        id=[],
-                        option=b""
-                    )
-                )
+                await client.report_chat(target_chat, reason, description=description)
                 await asyncio.sleep(1)
                 return True
             except FloodWait as e:
@@ -174,25 +196,22 @@ class MassReporter:
             except:
                 return False
 
-        remaining_clients = clients
-        for attempt in range(retries + 1):
-            if not remaining_clients:
-                break
-            tasks = [report_one(c) for c in remaining_clients]
+        for attempt in range(1, attempts + 1):
+            tasks = [report_one(c) for c in clients]
             task_results = await asyncio.gather(*tasks, return_exceptions=True)
-            next_remaining = []
 
-            for client_data, result in zip(remaining_clients, task_results):
+            success_count = 0
+            for result in task_results:
                 if result is True:
-                    results["success"] += 1
-                else:
-                    next_remaining.append(client_data)
+                    success_count += 1
 
-            remaining_clients = next_remaining
-            if attempt < retries and remaining_clients:
-                await asyncio.sleep(1)
+            attempt_total = len(clients)
+            results["success"] += success_count
+            results["failed"] += attempt_total - success_count
+            results["total"] += attempt_total
 
-        results["failed"] = len(remaining_clients)
+            if on_progress:
+                await on_progress(attempt, attempts, results)
 
         return results
 
@@ -202,8 +221,8 @@ class MassReporter:
         message_ids: list[int],
         reason,
         description: str = "",
-        max_reports: int | None = None,
-        retries: int = 1
+        attempts: int = 1,
+        on_progress=None
     ) -> dict:
         """🔥 Mass report specific messages"""
         if not self.active_clients:
@@ -213,22 +232,16 @@ class MassReporter:
             return {"success": 0, "failed": 0, "total": 0}
 
         clients = list(self.active_clients)
-        if max_reports is not None:
-            clients = clients[:max_reports]
-
-        results = {"success": 0, "failed": 0, "total": len(clients)}
+        results = {"success": 0, "failed": 0, "total": 0}
 
         async def report_one(client_data):
             client = client_data["client"]
             try:
-                await client.invoke(
-                    raw.functions.messages.Report(
-                        peer=await client.resolve_peer(target_chat),
-                        reason=reason,
-                        message=description or "",
-                        id=message_ids,
-                        option=b""
-                    )
+                await client.report_message(
+                    target_chat,
+                    message_ids,
+                    reason,
+                    description=description
                 )
                 await asyncio.sleep(1)
                 return True
@@ -238,25 +251,22 @@ class MassReporter:
             except:
                 return False
 
-        remaining_clients = clients
-        for attempt in range(retries + 1):
-            if not remaining_clients:
-                break
-            tasks = [report_one(c) for c in remaining_clients]
+        for attempt in range(1, attempts + 1):
+            tasks = [report_one(c) for c in clients]
             task_results = await asyncio.gather(*tasks, return_exceptions=True)
-            next_remaining = []
 
-            for client_data, result in zip(remaining_clients, task_results):
+            success_count = 0
+            for result in task_results:
                 if result is True:
-                    results["success"] += 1
-                else:
-                    next_remaining.append(client_data)
+                    success_count += 1
 
-            remaining_clients = next_remaining
-            if attempt < retries and remaining_clients:
-                await asyncio.sleep(1)
+            attempt_total = len(clients)
+            results["success"] += success_count
+            results["failed"] += attempt_total - success_count
+            results["total"] += attempt_total
 
-        results["failed"] = len(remaining_clients)
+            if on_progress:
+                await on_progress(attempt, attempts, results)
 
         return results
 
