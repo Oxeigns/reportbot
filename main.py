@@ -360,7 +360,7 @@ async def handle_user_input(client, message):
             "✅ **DESCRIPTION SAVED!**\n\n"
             "🔢 **HOW MANY REPORT ATTEMPTS?**\n"
             f"• Available sessions: `{available}`\n"
-            "• Each attempt uses all sessions\n"
+            "• Each attempt uses one session (round-robin)\n"
             "• Send a number (e.g., `3`)",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -438,13 +438,12 @@ async def handle_user_input(client, message):
             )
 
         keyboard = main_keyboard(await is_authorized(user_id))
-        total_possible = attempts * available
         text = f"""🎉 **REPORT FINISHED!**
 
 🧪 **ATTEMPTS:** `{attempts}`
 ✅ **ATTEMPTS SUCCESS:** `{results['attempt_success']}`
 ❌ **ATTEMPTS FAILED:** `{results['attempt_failed']}`
-📊 **TOTAL REPORTS:** `{total_possible}`
+📊 **TOTAL REPORTS:** `{results['total']}`
 ✅ **SUCCESS:** `{results['success']}`
 ❌ **FAILED:** `{results['failed']}`
 📈 **TOTAL:** `{results['total']}`
