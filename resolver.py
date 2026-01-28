@@ -18,6 +18,7 @@ from pyrogram.errors import (
 )
 
 from normalize import normalize_target
+from sessions import client_peer_cache, warmup_dialogs
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,6 @@ class ResolveError(Exception):
 
 def _now() -> float:
     return time.monotonic()
-
-
-def _normalized_key(normalized: dict[str, Any]) -> str:
-    return f"{normalized['kind']}:{normalized['normalized_value']}"
 
 
 def _get_alias(client: Client) -> str:
@@ -84,8 +81,13 @@ def _get_cached_invalid(alias: str, key: str) -> dict[str, Any] | None:
     return entry
 
 
+def _get_cached_peer(alias: str, chat_id: int) -> Any | None:
+    return client_peer_cache.get(alias, {}).get(chat_id)
+
+
 async def resolve_entity(
     client: Client,
+    alias: str,
     normalized: dict[str, Any],
 ) -> tuple[Any, int, str]:
     kind = normalized["kind"]
@@ -93,7 +95,17 @@ async def resolve_entity(
 
     try:
         if kind == "id":
-            entity = await client.get_chat(int(value))
+            chat_id = int(value)
+            cached = _get_cached_peer(alias, chat_id)
+            if cached:
+                return cached, chat_id, str(getattr(cached, "type", None))
+            try:
+                entity = await client.get_chat(chat_id)
+            except RPCError as error:
+                raise ResolveError(
+                    "UNRESOLVABLE_ID_FOR_THIS_SESSION",
+                    f"{error.__class__.__name__}",
+                )
         elif kind in {"username", "public_link"}:
             entity = await client.get_chat(str(value))
         elif kind == "invite_link":
@@ -101,17 +113,17 @@ async def resolve_entity(
                 entity = await client.get_chat(str(value))
             except (InviteHashInvalid, InviteHashExpired) as error:
                 raise ResolveError(
-                    "INVITE_LINK_NOT_RESOLVABLE",
+                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
                     f"invite invalid: {error.__class__.__name__}",
                 )
             except (PeerIdInvalid, ChannelPrivate, ChatAdminRequired) as error:
                 raise ResolveError(
-                    "INVITE_LINK_NOT_RESOLVABLE",
+                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
                     f"invite not accessible: {error.__class__.__name__}",
                 )
             except RPCError as error:
                 raise ResolveError(
-                    "INVITE_LINK_NOT_RESOLVABLE",
+                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
                     f"invite requires join: {error.__class__.__name__}",
                 )
         else:
@@ -135,27 +147,35 @@ async def resolve_entity(
 async def verify_access(client: Client, entity: Any) -> dict[str, Any]:
     alias = _get_alias(client)
     me = await client.get_me()
-    member = None
     member_status = None
+    reason = "UNKNOWN_ERROR"
+    ok = False
+    error_detail = None
+
     for attempt in range(2):
         try:
             member = await client.get_chat_member(entity.id, "me")
             member_status = getattr(member, "status", None)
+            reason = "ACCESS_OK"
             break
         except UserNotParticipant:
-            return {
-                "ok": False,
-                "reason": "NOT_A_MEMBER",
-                "member_status": None,
-                "me_id": me.id,
-            }
-        except (ChannelPrivate, ChatAdminRequired, PeerIdInvalid) as error:
-            return {
-                "ok": False,
-                "reason": error.__class__.__name__.upper(),
-                "member_status": None,
-                "me_id": me.id,
-            }
+            reason = "NOT_A_MEMBER"
+            break
+        except (ChannelPrivate, ChatAdminRequired) as error:
+            reason = error.__class__.__name__.upper()
+            break
+        except PeerIdInvalid:
+            if attempt == 0:
+                logger.warning(
+                    "Access check peer invalid alias=%s me=%s target=%s refreshing dialogs",
+                    alias,
+                    me.id,
+                    getattr(entity, "id", None),
+                )
+                await warmup_dialogs(client, alias)
+                continue
+            reason = "PEER_ID_INVALID"
+            break
         except RPCError as error:
             if attempt == 0:
                 logger.warning(
@@ -166,46 +186,52 @@ async def verify_access(client: Client, entity: Any) -> dict[str, Any]:
                     error.__class__.__name__,
                 )
                 continue
-            return {
-                "ok": False,
-                "reason": "RPC_ERROR",
-                "member_status": None,
-                "me_id": me.id,
-            }
+            reason = "RPC_ERROR"
+            break
         except Exception as error:
-            return {
-                "ok": False,
-                "reason": "UNKNOWN_ERROR",
-                "member_status": None,
-                "me_id": me.id,
-                "error": str(error)[:120],
-            }
+            reason = "UNKNOWN_ERROR"
+            error_detail = str(error)[:120]
+            break
 
     ok_statuses = {
         ChatMemberStatus.MEMBER,
         ChatMemberStatus.ADMINISTRATOR,
         ChatMemberStatus.OWNER,
     }
-    if member_status in ok_statuses:
-        return {
-            "ok": True,
-            "reason": "ACCESS_OK",
-            "member_status": member_status,
-            "me_id": me.id,
-        }
+    if reason == "ACCESS_OK" and member_status in ok_statuses:
+        ok = True
+    elif reason == "ACCESS_OK":
+        reason = "NO_ACCESS"
 
-    return {
-        "ok": False,
-        "reason": "NO_ACCESS",
+    logger.info(
+        "[ACCESS] alias=%s me=%s chat_id=%s type=%s title=%s status=%s ok=%s",
+        alias,
+        me.id,
+        getattr(entity, "id", None),
+        str(getattr(entity, "type", None)),
+        getattr(entity, "title", None),
+        member_status,
+        ok,
+    )
+
+    result = {
+        "ok": ok,
+        "reason": reason,
         "member_status": member_status,
         "me_id": me.id,
     }
+    if error_detail:
+        result["error"] = error_detail
+    return result
 
 
-async def ensure_target_ready(client: Client, raw_target: str | int) -> dict[str, Any]:
-    alias = _get_alias(client)
+async def ensure_target_ready(
+    client: Client,
+    alias: str,
+    raw_target: str | int,
+) -> dict[str, Any]:
     normalized = normalize_target(raw_target)
-    key = _normalized_key(normalized)
+    key = normalized["normalized_key"]
 
     cached_invalid = _get_cached_invalid(alias, key)
     if cached_invalid:
@@ -229,18 +255,24 @@ async def ensure_target_ready(client: Client, raw_target: str | int) -> dict[str
         }
 
     cached_resolved = _get_cached_resolved(alias, key)
+    entity = None
     if cached_resolved:
-        try:
-            entity = await client.get_chat(cached_resolved["entity_id"])
-            chat_id = entity.id
+        chat_id = cached_resolved["entity_id"]
+        cached_entity = _get_cached_peer(alias, chat_id)
+        if cached_entity:
+            entity = cached_entity
             chat_type = str(getattr(entity, "type", None))
-        except Exception:
-            _resolved_cache.pop((alias, key), None)
-            cached_resolved = None
+        else:
+            try:
+                entity = await client.get_chat(chat_id)
+                chat_type = str(getattr(entity, "type", None))
+            except Exception:
+                _resolved_cache.pop((alias, key), None)
+                cached_resolved = None
 
     if not cached_resolved:
         try:
-            entity, chat_id, chat_type = await resolve_entity(client, normalized)
+            entity, chat_id, chat_type = await resolve_entity(client, alias, normalized)
             _set_resolved(alias, key, chat_id)
         except ResolveError as error:
             _set_invalid(alias, key, error.code)
