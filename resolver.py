@@ -1,228 +1,388 @@
 from __future__ import annotations
 
 import logging
-import time
-from dataclasses import dataclass
 from typing import Any
 
 from pyrogram import Client
-from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import (
     ChannelPrivate,
     ChatAdminRequired,
+    FloodWait,
     InviteHashExpired,
     InviteHashInvalid,
     PeerIdInvalid,
     RPCError,
     UserNotParticipant,
+    UsernameInvalid,
+    UsernameNotOccupied,
 )
 
+from cache_helper import TTLCache
 from normalize import normalize_target
-from sessions import client_peer_cache, warmup_dialogs
+from sessions import client_peer_cache
 
 logger = logging.getLogger(__name__)
 
-_RESOLVED_TTL = 30 * 60
+_RESOLVED_TTL = 5 * 60
+_NOT_MEMBER_TTL = 30
 _INVALID_TTL = 10 * 60
 
-_resolved_cache: dict[tuple[str, str], dict[str, Any]] = {}
-_invalid_cache: dict[tuple[str, str], dict[str, Any]] = {}
-
-
-@dataclass
-class ResolveError(Exception):
-    code: str
-    details: str
-
-
-def _now() -> float:
-    return time.monotonic()
+_resolved_cache = TTLCache()
+_not_member_cache = TTLCache()
+_invalid_cache = TTLCache()
 
 
 def _get_alias(client: Client) -> str:
     return getattr(client, "alias", getattr(client, "name", "unknown"))
 
 
-def _cache_expired(entry: dict[str, Any]) -> bool:
-    return entry.get("expires_at", 0) <= _now()
-
-
-def _set_resolved(alias: str, key: str, entity_id: int) -> None:
-    _resolved_cache[(alias, key)] = {
-        "entity_id": entity_id,
-        "expires_at": _now() + _RESOLVED_TTL,
-    }
-
-
-def _set_invalid(alias: str, key: str, error_code: str) -> None:
-    _invalid_cache[(alias, key)] = {
-        "error_code": error_code,
-        "expires_at": _now() + _INVALID_TTL,
-    }
-
-
-def _get_cached_resolved(alias: str, key: str) -> dict[str, Any] | None:
-    entry = _resolved_cache.get((alias, key))
-    if not entry:
-        return None
-    if _cache_expired(entry):
-        _resolved_cache.pop((alias, key), None)
-        return None
-    return entry
-
-
-def _get_cached_invalid(alias: str, key: str) -> dict[str, Any] | None:
-    entry = _invalid_cache.get((alias, key))
-    if not entry:
-        return None
-    if _cache_expired(entry):
-        _invalid_cache.pop((alias, key), None)
-        return None
-    return entry
-
-
 def _get_cached_peer(alias: str, chat_id: int) -> Any | None:
     return client_peer_cache.get(alias, {}).get(chat_id)
 
 
-async def resolve_entity(
-    client: Client,
-    alias: str,
-    normalized: dict[str, Any],
-) -> tuple[Any, int, str]:
+def _cache_key(alias: str, key: str) -> tuple[str, str]:
+    return alias, key
+
+
+def _not_member_key(alias: str, chat_id: int) -> tuple[str, str]:
+    return alias, f"chat:{chat_id}"
+
+
+async def resolve_target(client: Client, target: str | int) -> dict[str, Any]:
+    alias = _get_alias(client)
+    try:
+        normalized = normalize_target(target)
+    except ValueError as error:
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=INVALID error=%s",
+            alias,
+            target,
+            str(error)[:120],
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "INVALID",
+            "error": str(error)[:120],
+        }
+
+    key = normalized["normalized_key"]
+    cached_invalid, invalid_ttl = _invalid_cache.get_with_ttl(_cache_key(alias, key))
+    if cached_invalid:
+        if invalid_ttl is not None:
+            logger.debug(
+                "Resolve cached invalid alias=%s target=%s ttl=%.1fs",
+                alias,
+                normalized["raw_input"],
+                invalid_ttl,
+            )
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=%s error=cached",
+            alias,
+            normalized["raw_input"],
+            cached_invalid["reason"],
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": cached_invalid["reason"],
+            "error": "cached",
+        }
+
+    cached_resolved, resolved_ttl = _resolved_cache.get_with_ttl(_cache_key(alias, key))
+    if cached_resolved:
+        if resolved_ttl is not None:
+            logger.debug(
+                "Resolve cached ok alias=%s target=%s ttl=%.1fs",
+                alias,
+                normalized["raw_input"],
+                resolved_ttl,
+            )
+        chat_id = cached_resolved["chat_id"]
+        title = cached_resolved.get("title")
+        cached_not_member, not_member_ttl = _not_member_cache.get_with_ttl(
+            _not_member_key(alias, chat_id),
+        )
+        if cached_not_member:
+            if not_member_ttl is not None:
+                logger.debug(
+                    "Resolve cached not_member alias=%s target=%s ttl=%.1fs",
+                    alias,
+                    normalized["raw_input"],
+                    not_member_ttl,
+                )
+            logger.info(
+                "[ACCESS] alias=%s target=%s chat_id=%s title=%s",
+                alias,
+                normalized["raw_input"],
+                chat_id,
+                title,
+            )
+            logger.info(
+                "[BLOCKED] alias=%s target=%s chat_id=%s reason=NOT_A_MEMBER error=cached",
+                alias,
+                normalized["raw_input"],
+                chat_id,
+            )
+            return {
+                "ok": False,
+                "chat_id": chat_id,
+                "title": title,
+                "reason": "NOT_A_MEMBER",
+                "error": "cached",
+            }
+        logger.info(
+            "[ACCESS] alias=%s target=%s chat_id=%s title=%s",
+            alias,
+            normalized["raw_input"],
+            chat_id,
+            title,
+        )
+        return {
+            "ok": True,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": None,
+            "error": None,
+        }
+
     kind = normalized["kind"]
     value = normalized["normalized_value"]
 
     try:
         if kind == "id":
             chat_id = int(value)
-            cached = _get_cached_peer(alias, chat_id)
-            if cached:
-                return cached, chat_id, str(getattr(cached, "type", None))
-            try:
+            cached_peer = _get_cached_peer(alias, chat_id)
+            if cached_peer:
+                entity = cached_peer
+            else:
                 entity = await client.get_chat(chat_id)
-            except RPCError as error:
-                raise ResolveError(
-                    "UNRESOLVABLE_ID_FOR_THIS_SESSION",
-                    f"{error.__class__.__name__}",
-                )
         elif kind in {"username", "public_link"}:
             entity = await client.get_chat(str(value))
         elif kind == "invite_link":
-            try:
-                entity = await client.get_chat(str(value))
-            except (InviteHashInvalid, InviteHashExpired) as error:
-                raise ResolveError(
-                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
-                    f"invite invalid: {error.__class__.__name__}",
-                )
-            except (PeerIdInvalid, ChannelPrivate, ChatAdminRequired) as error:
-                raise ResolveError(
-                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
-                    f"invite not accessible: {error.__class__.__name__}",
-                )
-            except RPCError as error:
-                raise ResolveError(
-                    "INVITE_LINK_REQUIRES_JOIN_OR_NOT_RESOLVABLE",
-                    f"invite requires join: {error.__class__.__name__}",
-                )
+            entity = await client.get_chat(str(value))
         else:
-            raise ResolveError("INVALID_TARGET", f"Unsupported kind: {kind}")
-    except ResolveError:
-        raise
-    except PeerIdInvalid as error:
-        raise ResolveError("PEER_ID_INVALID", str(error))
+            raise ValueError(f"Unsupported kind: {kind}")
+    except (InviteHashInvalid, InviteHashExpired):
+        _invalid_cache.set(
+            _cache_key(alias, key),
+            {"reason": "INVALID"},
+            _INVALID_TTL,
+        )
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=INVALID error=invite_invalid",
+            alias,
+            normalized["raw_input"],
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "INVALID",
+            "error": "invite_invalid",
+        }
+    except (UsernameInvalid, UsernameNotOccupied, PeerIdInvalid, ValueError) as error:
+        _invalid_cache.set(
+            _cache_key(alias, key),
+            {"reason": "INVALID"},
+            _INVALID_TTL,
+        )
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=INVALID error=%s",
+            alias,
+            normalized["raw_input"],
+            error.__class__.__name__,
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "INVALID",
+            "error": error.__class__.__name__,
+        }
+    except (ChannelPrivate, ChatAdminRequired) as error:
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=PRIVATE error=%s",
+            alias,
+            normalized["raw_input"],
+            error.__class__.__name__,
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "PRIVATE",
+            "error": error.__class__.__name__,
+        }
+    except FloodWait as error:
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=FLOODWAIT error=%ss",
+            alias,
+            normalized["raw_input"],
+            error.value,
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "FLOODWAIT",
+            "error": str(error.value),
+        }
     except RPCError as error:
-        raise ResolveError("RESOLVE_RPC_ERROR", str(error))
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=RPC_ERROR error=%s",
+            alias,
+            normalized["raw_input"],
+            error.__class__.__name__,
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "RPC_ERROR",
+            "error": error.__class__.__name__,
+        }
     except Exception as error:
-        raise ResolveError("RESOLVE_FAILED", str(error))
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=RPC_ERROR error=%s",
+            alias,
+            normalized["raw_input"],
+            str(error)[:120],
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "RPC_ERROR",
+            "error": str(error)[:120],
+        }
 
     chat_id = getattr(entity, "id", None)
+    title = getattr(entity, "title", None)
     if chat_id is None:
-        raise ResolveError("RESOLVE_FAILED", "Resolved entity missing id")
-    chat_type = getattr(entity, "type", None)
-    return entity, chat_id, str(chat_type)
+        logger.info(
+            "[BLOCKED] alias=%s target=%s reason=RPC_ERROR error=missing_chat_id",
+            alias,
+            normalized["raw_input"],
+        )
+        return {
+            "ok": False,
+            "chat_id": None,
+            "title": None,
+            "reason": "RPC_ERROR",
+            "error": "missing_chat_id",
+        }
 
-
-async def verify_access(client: Client, entity: Any) -> dict[str, Any]:
-    alias = _get_alias(client)
     me = await client.get_me()
-    member_status = None
-    reason = "UNKNOWN_ERROR"
-    ok = False
-    error_detail = None
-
-    for attempt in range(2):
-        try:
-            member = await client.get_chat_member(entity.id, "me")
-            member_status = getattr(member, "status", None)
-            reason = "ACCESS_OK"
-            break
-        except UserNotParticipant:
-            reason = "NOT_A_MEMBER"
-            break
-        except (ChannelPrivate, ChatAdminRequired) as error:
-            reason = error.__class__.__name__.upper()
-            break
-        except PeerIdInvalid:
-            if attempt == 0:
-                logger.warning(
-                    "Access check peer invalid alias=%s me=%s target=%s refreshing dialogs",
-                    alias,
-                    me.id,
-                    getattr(entity, "id", None),
-                )
-                await warmup_dialogs(client, alias)
-                continue
-            reason = "PEER_ID_INVALID"
-            break
-        except RPCError as error:
-            if attempt == 0:
-                logger.warning(
-                    "Access check RPC error alias=%s me=%s target=%s err=%s retrying",
-                    alias,
-                    me.id,
-                    getattr(entity, "id", None),
-                    error.__class__.__name__,
-                )
-                continue
-            reason = "RPC_ERROR"
-            break
-        except Exception as error:
-            reason = "UNKNOWN_ERROR"
-            error_detail = str(error)[:120]
-            break
-
-    ok_statuses = {
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.OWNER,
-    }
-    if reason == "ACCESS_OK" and member_status in ok_statuses:
-        ok = True
-    elif reason == "ACCESS_OK":
-        reason = "NO_ACCESS"
-
     logger.info(
-        "[ACCESS] alias=%s me=%s chat_id=%s type=%s title=%s status=%s ok=%s",
+        "[ACCESS] alias=%s me=%s target=%s chat_id=%s title=%s",
         alias,
         me.id,
-        getattr(entity, "id", None),
-        str(getattr(entity, "type", None)),
-        getattr(entity, "title", None),
-        member_status,
-        ok,
+        normalized["raw_input"],
+        chat_id,
+        title,
     )
+    try:
+        await client.get_chat_member(chat_id, me.id)
+    except UserNotParticipant:
+        _not_member_cache.set(
+            _not_member_key(alias, chat_id),
+            {"reason": "NOT_A_MEMBER"},
+            _NOT_MEMBER_TTL,
+        )
+        logger.info(
+            "[BLOCKED] alias=%s me=%s target=%s chat_id=%s reason=NOT_A_MEMBER error=not_member",
+            alias,
+            me.id,
+            normalized["raw_input"],
+            chat_id,
+        )
+        return {
+            "ok": False,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": "NOT_A_MEMBER",
+            "error": None,
+        }
+    except (ChannelPrivate, ChatAdminRequired) as error:
+        logger.info(
+            "[BLOCKED] alias=%s me=%s target=%s chat_id=%s reason=PRIVATE error=%s",
+            alias,
+            me.id,
+            normalized["raw_input"],
+            chat_id,
+            error.__class__.__name__,
+        )
+        return {
+            "ok": False,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": "PRIVATE",
+            "error": error.__class__.__name__,
+        }
+    except FloodWait as error:
+        logger.info(
+            "[BLOCKED] alias=%s me=%s target=%s chat_id=%s reason=FLOODWAIT error=%ss",
+            alias,
+            me.id,
+            normalized["raw_input"],
+            chat_id,
+            error.value,
+        )
+        return {
+            "ok": False,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": "FLOODWAIT",
+            "error": str(error.value),
+        }
+    except RPCError as error:
+        logger.info(
+            "[BLOCKED] alias=%s me=%s target=%s chat_id=%s reason=RPC_ERROR error=%s",
+            alias,
+            me.id,
+            normalized["raw_input"],
+            chat_id,
+            error.__class__.__name__,
+        )
+        return {
+            "ok": False,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": "RPC_ERROR",
+            "error": error.__class__.__name__,
+        }
+    except Exception as error:
+        logger.info(
+            "[BLOCKED] alias=%s me=%s target=%s chat_id=%s reason=RPC_ERROR error=%s",
+            alias,
+            me.id,
+            normalized["raw_input"],
+            chat_id,
+            str(error)[:120],
+        )
+        return {
+            "ok": False,
+            "chat_id": chat_id,
+            "title": title,
+            "reason": "RPC_ERROR",
+            "error": str(error)[:120],
+        }
 
-    result = {
-        "ok": ok,
-        "reason": reason,
-        "member_status": member_status,
-        "me_id": me.id,
+    _resolved_cache.set(
+        _cache_key(alias, key),
+        {"chat_id": chat_id, "title": title},
+        _RESOLVED_TTL,
+    )
+    return {
+        "ok": True,
+        "chat_id": chat_id,
+        "title": title,
+        "reason": None,
+        "error": None,
     }
-    if error_detail:
-        result["error"] = error_detail
-    return result
 
 
 async def ensure_target_ready(
@@ -230,107 +390,28 @@ async def ensure_target_ready(
     alias: str,
     raw_target: str | int,
 ) -> dict[str, Any]:
-    normalized = normalize_target(raw_target)
-    key = normalized["normalized_key"]
-
-    cached_invalid = _get_cached_invalid(alias, key)
-    if cached_invalid:
-        me_id = None
-        try:
-            me_id = (await client.get_me()).id
-        except Exception:
-            me_id = None
-        logger.info(
-            "[BLOCKED] alias=%s me=%s target=%s reason=%s error=%s",
-            alias,
-            me_id,
-            normalized["raw_input"],
-            cached_invalid["error_code"],
-            "cached",
-        )
+    _ = alias
+    result = await resolve_target(client, raw_target)
+    if not result["ok"]:
         return {
             "ok": False,
-            "normalized": normalized,
-            "reason": cached_invalid["error_code"],
+            "normalized": normalize_target(raw_target),
+            "reason": result["reason"],
+            "error": result.get("error"),
         }
 
-    cached_resolved = _get_cached_resolved(alias, key)
+    chat_id = result["chat_id"]
     entity = None
-    if cached_resolved:
-        chat_id = cached_resolved["entity_id"]
+    if chat_id is not None:
         cached_entity = _get_cached_peer(alias, chat_id)
         if cached_entity:
             entity = cached_entity
-            chat_type = str(getattr(entity, "type", None))
         else:
-            try:
-                entity = await client.get_chat(chat_id)
-                chat_type = str(getattr(entity, "type", None))
-            except Exception:
-                _resolved_cache.pop((alias, key), None)
-                cached_resolved = None
-
-    if not cached_resolved:
-        try:
-            entity, chat_id, chat_type = await resolve_entity(client, alias, normalized)
-            _set_resolved(alias, key, chat_id)
-        except ResolveError as error:
-            _set_invalid(alias, key, error.code)
-            me_id = None
-            try:
-                me_id = (await client.get_me()).id
-            except Exception:
-                me_id = None
-            logger.info(
-                "[BLOCKED] alias=%s me=%s target=%s reason=%s error=%s",
-                alias,
-                me_id,
-                normalized["raw_input"],
-                error.code,
-                error.details,
-            )
-            return {
-                "ok": False,
-                "normalized": normalized,
-                "reason": error.code,
-                "error": error.details,
-            }
-
-    access = await verify_access(client, entity)
-    if access["ok"]:
-        logger.info(
-            "[READY] alias=%s me=%s target=%s chat_id=%s type=%s title=%s status=%s",
-            alias,
-            access["me_id"],
-            normalized["raw_input"],
-            chat_id,
-            chat_type,
-            getattr(entity, "title", None),
-            access.get("member_status"),
-        )
-        return {
-            "ok": True,
-            "entity": entity,
-            "chat_id": chat_id,
-            "chat_type": chat_type,
-            "normalized": normalized,
-        }
-
-    _set_invalid(alias, key, access["reason"])
-    logger.info(
-        "[BLOCKED] alias=%s me=%s target=%s chat_id=%s type=%s title=%s reason=%s error=%s",
-        alias,
-        access.get("me_id"),
-        normalized["raw_input"],
-        chat_id,
-        chat_type,
-        getattr(entity, "title", None),
-        access["reason"],
-        access.get("member_status"),
-    )
+            entity = await client.get_chat(chat_id)
     return {
-        "ok": False,
-        "normalized": normalized,
-        "reason": access["reason"],
-        "member_status": access.get("member_status"),
+        "ok": True,
+        "entity": entity,
+        "chat_id": chat_id,
+        "chat_type": str(getattr(entity, "type", None)),
+        "normalized": normalize_target(raw_target),
     }
