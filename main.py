@@ -134,17 +134,42 @@ async def animate_for_duration(
 
 def main_keyboard(is_admin: bool = False, is_owner: bool = False):
     keyboard = [
-        [InlineKeyboardButton("🚀 START REPORT", callback_data="start_report")],
-        [InlineKeyboardButton("📊 STATS", callback_data="stats")]
+        [
+            InlineKeyboardButton("🚀 START REPORT", callback_data="start_report"),
+            InlineKeyboardButton("📊 STATS", callback_data="stats"),
+        ],
     ]
     if is_admin:
-        keyboard.extend([
-            [InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session")],
-        ])
+        keyboard.append(
+            [
+                InlineKeyboardButton("➕ ADD SESSION", callback_data="add_session"),
+                InlineKeyboardButton("ℹ️ HELP", callback_data="help"),
+            ]
+        )
+    else:
+        keyboard.append(
+            [
+                InlineKeyboardButton("ℹ️ HELP", callback_data="help"),
+                InlineKeyboardButton("📘 GUIDE", callback_data="guide"),
+            ]
+        )
     if is_owner:
-        keyboard.append([InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos")])
-    keyboard.append([InlineKeyboardButton("ℹ️ HELP", callback_data="help")])
+        keyboard.append(
+            [
+                InlineKeyboardButton("👥 SUDOS", callback_data="manage_sudos"),
+                InlineKeyboardButton("📘 GUIDE", callback_data="guide"),
+            ]
+        )
     return InlineKeyboardMarkup(keyboard)
+
+def build_dashboard_card(title: str, rows: list[str]) -> str:
+    inner_width = 30
+    top = "╭" + ("─" * (inner_width + 2)) + "╮"
+    bottom = "╰" + ("─" * (inner_width + 2)) + "╯"
+    content = [top, f"│ {title:<{inner_width}} │"]
+    content.extend(f"│ {row:<{inner_width}} │" for row in rows)
+    content.append(bottom)
+    return "```text\n" + "\n".join(content) + "\n```"
 
 async def run_startup_health_check(target: str | None) -> None:
     if not target:
@@ -228,18 +253,22 @@ async def start_cmd(client, message):
     is_admin = await is_authorized(message.from_user.id)
     is_owner = message.from_user.id == OWNER_ID
     stats = await db.get_stats()
-    
-    text = f"""🔥 **STARTLOVE v3.0** ✅
 
-📊 **STATS:**
-• `{stats['active']}` Active ✅
-• `{stats['pending']}` Pending ⏳
-• `{stats['failed']}` Failed ❌
-• `{stats['total']}` Total 📈
+    card = build_dashboard_card(
+        "STARTLOVE v3.0 DASHBOARD",
+        [
+            f"ACTIVE   {stats['active']} ✅",
+            f"PENDING  {stats['pending']} ⏳",
+            f"FAILED   {stats['failed']} ❌",
+            f"TOTAL    {stats['total']} 📈",
+            f"ROLE     {'ADMIN' if is_admin else 'USER'}",
+        ],
+    )
 
-👤 **You:** {'🔥 ADMIN' if is_admin else '👤 User'}
-"""
-    
+    text = f"""{card}
+
+**Tap a card below to continue.**"""
+
     await message.reply_text(text, reply_markup=main_keyboard(is_admin, is_owner), parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^stats$"))
@@ -252,14 +281,19 @@ async def stats_callback(client, callback: CallbackQuery):
         [InlineKeyboardButton("🏠 MAIN", callback_data="home")]
     ])
     
-    text = f"""📊 **LIVE STATS** 🔥
+    card = build_dashboard_card(
+        "LIVE STATS",
+        [
+            f"ACTIVE   {stats['active']} ✅",
+            f"PENDING  {stats['pending']} ⏳",
+            f"FAILED   {stats['failed']} ❌",
+            f"TOTAL    {stats['total']} 📈",
+            f"SUDOS    {stats['sudo']} 👥",
+        ],
+    )
+    text = f"""{card}
 
-✅ **ACTIVE:** `{stats['active']}`
-⏳ **PENDING:** `{stats['pending']}`
-❌ **FAILED:** `{stats['failed']}`
-📈 **TOTAL:** `{stats['total']}`
-👥 **SUDOS:** `{stats['sudo']}`
-"""
+**Live telemetry is refreshed in real-time.**"""
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex("^validate_all$"))
@@ -821,7 +855,7 @@ async def sudo_remove_callback(client, callback: CallbackQuery):
         parse_mode=ParseMode.MARKDOWN
     )
 
-@app.on_callback_query(filters.regex("^(home|help)$"))
+@app.on_callback_query(filters.regex("^(home|help|guide)$"))
 async def other_callbacks(client, callback: CallbackQuery):
     await safe_answer(callback)
     await callback.answer("🔥 Coming soon!", show_alert=True)
