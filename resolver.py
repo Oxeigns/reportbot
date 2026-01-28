@@ -109,6 +109,11 @@ async def resolve_entity(
                     "INVITE_LINK_NOT_RESOLVABLE",
                     f"invite not accessible: {error.__class__.__name__}",
                 )
+            except RPCError as error:
+                raise ResolveError(
+                    "INVITE_LINK_NOT_RESOLVABLE",
+                    f"invite requires join: {error.__class__.__name__}",
+                )
         else:
             raise ResolveError("INVALID_TARGET", f"Unsupported kind: {kind}")
     except ResolveError:
@@ -166,6 +171,14 @@ async def verify_access(client: Client, entity: Any) -> dict[str, Any]:
                 "reason": "RPC_ERROR",
                 "member_status": None,
                 "me_id": me.id,
+            }
+        except Exception as error:
+            return {
+                "ok": False,
+                "reason": "UNKNOWN_ERROR",
+                "member_status": None,
+                "me_id": me.id,
+                "error": str(error)[:120],
             }
 
     ok_statuses = {
@@ -273,10 +286,13 @@ async def ensure_target_ready(client: Client, raw_target: str | int) -> dict[str
 
     _set_invalid(alias, key, access["reason"])
     logger.info(
-        "[BLOCKED] alias=%s me=%s target=%s reason=%s error=%s",
+        "[BLOCKED] alias=%s me=%s target=%s chat_id=%s type=%s title=%s reason=%s error=%s",
         alias,
         access.get("me_id"),
         normalized["raw_input"],
+        chat_id,
+        chat_type,
+        getattr(entity, "title", None),
         access["reason"],
         access.get("member_status"),
     )
