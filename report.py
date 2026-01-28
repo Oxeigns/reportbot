@@ -5,7 +5,7 @@ from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
-from resolver import ensure_target_ready
+from resolver import resolve_target
 from sessions import warmup_dialogs
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,14 @@ class MassReporter:
         self.floodwait_buffer = 2
         self.max_retries = 1
 
-    async def _report_with_retries(self, report_call, client_name: str) -> bool:
+    async def _report_with_retries(self, report_call, client_name: str) -> str:
         for attempt in range(self.max_retries + 1):
             try:
                 await report_call()
                 await asyncio.sleep(self.per_report_delay)
-                return True
+                return "success"
+            except NotMemberError:
+                return "skipped_not_member"
             except FloodWait as error:
                 wait_time = error.value + self.floodwait_buffer
                 logger.warning("FloodWait for %s: %ss", client_name, wait_time)
@@ -64,24 +66,26 @@ class MassReporter:
             except Exception as error:
                 logger.warning("Report failed for %s: %s", client_name, str(error)[:120])
                 await asyncio.sleep(self.retry_delay)
-        return False
+        return "failed"
     
     @staticmethod
     async def _ensure_peer(client: Client, target_chat):
         alias = getattr(client, "alias", getattr(client, "name", "unknown"))
-        result = await ensure_target_ready(client, alias, target_chat)
+        result = await resolve_target(client, target_chat)
         if not result.get("ok"):
+            if result.get("reason") == "NOT_A_MEMBER":
+                raise NotMemberError(f"Not a member of {target_chat}")
             raise ValueError(f"Unable to resolve target {target_chat}: {result.get('reason')}")
-        return result["entity"]
+        return result["chat_id"]
 
     @staticmethod
     def _attach_report_helpers(client: Client) -> None:
         if not hasattr(client, "report_message"):
             async def report_message(self, target_chat, message_ids, reason, description: str = ""):
-                entity = await MassReporter._ensure_peer(self, target_chat)
+                chat_id = await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
-                        peer=await self.resolve_peer(entity.id),
+                        peer=await self.resolve_peer(chat_id),
                         reason=reason,
                         message=description or "",
                         id=message_ids
@@ -92,10 +96,10 @@ class MassReporter:
 
         if not hasattr(client, "report_chat"):
             async def report_chat(self, target_chat, reason, description: str = ""):
-                entity = await MassReporter._ensure_peer(self, target_chat)
+                chat_id = await MassReporter._ensure_peer(self, target_chat)
                 await self.invoke(
                     raw.functions.messages.Report(
-                        peer=await self.resolve_peer(entity.id),
+                        peer=await self.resolve_peer(chat_id),
                         reason=reason,
                         message=description or "",
                         id=[]
@@ -218,7 +222,7 @@ class MassReporter:
     ) -> dict:
         """🔥 Mass report"""
         if not self.active_clients:
-            return {"success": 0, "failed": 0, "total": 0}
+            return {"success": 0, "failed": 0, "total": 0, "skipped_not_member": 0}
 
         clients = list(self.active_clients)
         return await self._run_global_attempts(
@@ -243,10 +247,10 @@ class MassReporter:
     ) -> dict:
         """🔥 Mass report specific messages"""
         if not self.active_clients:
-            return {"success": 0, "failed": 0, "total": 0}
+            return {"success": 0, "failed": 0, "total": 0, "skipped_not_member": 0}
 
         if not message_ids:
-            return {"success": 0, "failed": 0, "total": 0}
+            return {"success": 0, "failed": 0, "total": 0, "skipped_not_member": 0}
 
         clients = list(self.active_clients)
         return await self._run_global_attempts(
@@ -269,14 +273,22 @@ class MassReporter:
         on_progress=None
     ) -> dict:
         if total_attempts < 1 or not clients:
-            return {"success": 0, "failed": 0, "total": 0, "attempt_success": 0, "attempt_failed": 0}
+            return {
+                "success": 0,
+                "failed": 0,
+                "total": 0,
+                "attempt_success": 0,
+                "attempt_failed": 0,
+                "skipped_not_member": 0,
+            }
 
         results = {
             "success": 0,
             "failed": 0,
             "total": 0,
             "attempt_success": 0,
-            "attempt_failed": 0
+            "attempt_failed": 0,
+            "skipped_not_member": 0,
         }
         completed_attempts = 0
         lock = asyncio.Lock()
@@ -302,13 +314,15 @@ class MassReporter:
 
             client = client_data["client"]
             report_call = report_factory(client)
-            ok = await self._report_with_retries(report_call, client_data["name"])
+            status = await self._report_with_retries(report_call, client_data["name"])
 
             async with lock:
                 completed_attempts += 1
-                if ok:
+                if status == "success":
                     results["success"] += 1
                     results["attempt_success"] += 1
+                elif status == "skipped_not_member":
+                    results["skipped_not_member"] += 1
                 else:
                     results["failed"] += 1
                     results["attempt_failed"] += 1
@@ -322,5 +336,9 @@ class MassReporter:
                 await asyncio.sleep(self.between_attempts_delay)
 
         return results
+
+
+class NotMemberError(Exception):
+    pass
 
 reporter = MassReporter()
