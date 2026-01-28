@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import types
 from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
@@ -50,17 +51,23 @@ class MassReporter:
         self.retry_delay = 2.0
         self.floodwait_buffer = 2
         self.max_retries = 1
+        self.session_cooldowns: dict[str, float] = {}
+        self.report_concurrency = 6
 
     async def _report_with_retries(self, report_call, client_name: str) -> bool:
         for attempt in range(self.max_retries + 1):
             try:
-                await report_call()
+                ok = await report_call()
+                if not ok:
+                    logger.warning("Report response false for %s", client_name)
+                    return False
                 await asyncio.sleep(self.per_report_delay)
                 return True
             except FloodWait as error:
                 wait_time = error.value + self.floodwait_buffer
                 logger.warning("FloodWait for %s: %ss", client_name, wait_time)
-                await asyncio.sleep(wait_time)
+                self.session_cooldowns[client_name] = time.monotonic() + wait_time
+                return False
             except Exception as error:
                 logger.warning("Report failed for %s: %s", client_name, str(error)[:120])
                 await asyncio.sleep(self.retry_delay)
@@ -79,7 +86,7 @@ class MassReporter:
         if not hasattr(client, "report_message"):
             async def report_message(self, target_chat, message_ids, reason, description: str = ""):
                 entity = await MassReporter._ensure_peer(self, target_chat)
-                await self.invoke(
+                response = await self.invoke(
                     raw.functions.messages.Report(
                         peer=await self.resolve_peer(entity.id),
                         reason=reason,
@@ -87,13 +94,20 @@ class MassReporter:
                         id=message_ids
                     )
                 )
+                if isinstance(response, raw.types.BoolFalse):
+                    return False
+                if isinstance(response, raw.types.BoolTrue):
+                    return True
+                if isinstance(response, bool):
+                    return response
+                return True
 
             client.report_message = types.MethodType(report_message, client)
 
         if not hasattr(client, "report_chat"):
             async def report_chat(self, target_chat, reason, description: str = ""):
                 entity = await MassReporter._ensure_peer(self, target_chat)
-                await self.invoke(
+                response = await self.invoke(
                     raw.functions.messages.Report(
                         peer=await self.resolve_peer(entity.id),
                         reason=reason,
@@ -101,6 +115,13 @@ class MassReporter:
                         id=[]
                     )
                 )
+                if isinstance(response, raw.types.BoolFalse):
+                    return False
+                if isinstance(response, raw.types.BoolTrue):
+                    return True
+                if isinstance(response, bool):
+                    return response
+                return True
 
             client.report_chat = types.MethodType(report_chat, client)
 
@@ -190,7 +211,6 @@ class MassReporter:
 
     async def join_target_chat(self, chat_link: str) -> int:
         """Join target"""
-        joined = 0
         semaphore = asyncio.Semaphore(2)
         
         async def join_one(client_data):
@@ -198,14 +218,20 @@ class MassReporter:
                 try:
                     await client_data["client"].join_chat(chat_link)
                     return True
-                except:
+                except Exception as error:
+                    logger.warning(
+                        "Join failed for %s: %s",
+                        client_data.get("name", "unknown"),
+                        str(error)[:120],
+                    )
                     return False
         
         if not self.active_clients:
             return 0
             
         tasks = [join_one(c) for c in self.active_clients]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = [result is True for result in results]
         return sum(results)
 
     async def mass_report_chat(
@@ -280,46 +306,63 @@ class MassReporter:
         }
         completed_attempts = 0
         lock = asyncio.Lock()
-        client_index = 0
+        index_lock = asyncio.Lock()
+        client_index = {"value": 0}
+        semaphore = asyncio.Semaphore(self.report_concurrency)
 
-        while completed_attempts < total_attempts:
-            client_data = clients[client_index % len(clients)]
-            client_index += 1
-
-            async with lock:
-                if completed_attempts >= total_attempts:
-                    break
-                current_attempt = completed_attempts + 1
-                remaining = total_attempts - current_attempt
-
-            logger.info(
-                "Reporting with %s (attempt %s/%s, remaining %s)",
-                client_data["name"],
-                current_attempt,
-                total_attempts,
-                remaining
-            )
-
-            client = client_data["client"]
-            report_call = report_factory(client)
-            ok = await self._report_with_retries(report_call, client_data["name"])
-
-            async with lock:
-                completed_attempts += 1
-                if ok:
-                    results["success"] += 1
-                    results["attempt_success"] += 1
+        async def acquire_client():
+            while True:
+                earliest_resume = None
+                async with index_lock:
+                    now = time.monotonic()
+                    for _ in range(len(clients)):
+                        candidate = clients[client_index["value"] % len(clients)]
+                        client_index["value"] += 1
+                        resume_time = self.session_cooldowns.get(candidate["name"], 0)
+                        if resume_time <= now:
+                            return candidate
+                        if earliest_resume is None or resume_time < earliest_resume:
+                            earliest_resume = resume_time
+                if earliest_resume is None:
+                    await asyncio.sleep(self.retry_delay)
                 else:
-                    results["failed"] += 1
-                    results["attempt_failed"] += 1
-                results["total"] += 1
+                    wait_time = max(0, earliest_resume - time.monotonic())
+                    await asyncio.sleep(min(wait_time, self.retry_delay))
 
-            if on_progress:
-                await on_progress(completed_attempts, total_attempts, results)
+        async def run_attempt(attempt_number: int):
+            nonlocal completed_attempts
+            async with semaphore:
+                client_data = await acquire_client()
+                remaining = total_attempts - attempt_number
+                logger.info(
+                    "Reporting with %s (attempt %s/%s, remaining %s)",
+                    client_data["name"],
+                    attempt_number,
+                    total_attempts,
+                    remaining
+                )
 
-            await asyncio.sleep(self.between_clients_delay)
-            if completed_attempts < total_attempts and client_index % len(clients) == 0:
-                await asyncio.sleep(self.between_attempts_delay)
+                client = client_data["client"]
+                report_call = report_factory(client)
+                ok = await self._report_with_retries(report_call, client_data["name"])
+
+                async with lock:
+                    completed_attempts += 1
+                    if ok:
+                        results["success"] += 1
+                        results["attempt_success"] += 1
+                    else:
+                        results["failed"] += 1
+                        results["attempt_failed"] += 1
+                    results["total"] += 1
+
+                if on_progress:
+                    await on_progress(completed_attempts, total_attempts, results)
+
+                await asyncio.sleep(self.between_clients_delay)
+
+        tasks = [run_attempt(i) for i in range(1, total_attempts + 1)]
+        await asyncio.gather(*tasks)
 
         return results
 
