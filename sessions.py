@@ -11,6 +11,8 @@ from config import API_HASH, API_ID
 from database import db
 
 logger = logging.getLogger(__name__)
+client_peer_cache: dict[str, dict[int, Any]] = {}
+_peer_cache_lock = asyncio.Lock()
 
 
 def _unique_client_name(alias: str) -> str:
@@ -37,6 +39,43 @@ async def detect_collisions(client_records: list[dict[str, Any]]) -> None:
                 "SESSION COLLISION: multiple clients logged in as same account"
             )
         seen[me.id] = alias
+
+
+async def warmup_dialogs(
+    client: Client,
+    alias: str | None = None,
+    *,
+    max_dialogs: int = 5000,
+) -> dict[int, Any]:
+    resolved_alias = alias or getattr(client, "alias", getattr(client, "name", "unknown"))
+    dialog_map: dict[int, Any] = {}
+    count = 0
+    async for dialog in client.get_dialogs():
+        chat = getattr(dialog, "chat", None)
+        if not chat:
+            continue
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            continue
+        dialog_map[int(chat_id)] = chat
+        count += 1
+        if count >= max_dialogs:
+            break
+    async with _peer_cache_lock:
+        client_peer_cache[resolved_alias] = dialog_map
+    me_id = None
+    try:
+        me_id = (await client.get_me()).id
+    except Exception:
+        me_id = None
+    logger.info(
+        "WARMUP DONE alias=%s me=%s dialogs=%s peers_cached=%s",
+        resolved_alias,
+        me_id,
+        count,
+        len(dialog_map),
+    )
+    return dialog_map
 
 
 async def _start_client(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -66,6 +105,14 @@ async def _start_client(session: dict[str, Any]) -> dict[str, Any] | None:
         me.is_bot,
         getattr(me, "phone_number", None),
     )
+    try:
+        await warmup_dialogs(client, session_name)
+    except Exception as error:
+        logger.warning(
+            "Warmup failed: alias=%s error=%s",
+            session_name,
+            str(error)[:120],
+        )
     return {"alias": session_name, "client": client, "me": me, "session": session}
 
 

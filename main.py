@@ -7,8 +7,9 @@ from pyrogram.enums import ParseMode
 from config import BOT_TOKEN, OWNER_ID, API_ID, API_HASH
 from database import db
 from report import reporter, SessionValidator
-from resolver import ensure_target_ready
-from sessions import build_clients
+from normalize import normalize_target
+from resolver import resolve_entity, verify_access, ResolveError
+from sessions import build_clients, client_peer_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -151,26 +152,49 @@ async def run_startup_health_check(target: str | None) -> None:
         return
     concurrency = int(os.environ.get("SESSION_START_CONCURRENCY", "5"))
     clients = await build_clients(concurrency=concurrency)
-    accessible: list[str] = []
-    blocked: list[str] = []
+    normalized = normalize_target(target)
+    in_dialogs = 0
+    accessible = 0
+    blocked = 0
     try:
         for record in clients:
             alias = record["alias"]
             client = record["client"]
+            dialog_map = client_peer_cache.get(alias, {})
+            entity = None
+            chat_id = None
             try:
-                result = await ensure_target_ready(client, target)
-            except Exception as error:
-                blocked.append(f"{alias} error={str(error)[:120]}")
+                if normalized["kind"] == "id":
+                    chat_id = int(normalized["normalized_value"])
+                    entity = dialog_map.get(chat_id)
+                    if entity:
+                        in_dialogs += 1
+                    else:
+                        entity, chat_id, _ = await resolve_entity(client, alias, normalized)
+                else:
+                    entity, chat_id, _ = await resolve_entity(client, alias, normalized)
+                    if chat_id in dialog_map:
+                        in_dialogs += 1
+            except ResolveError:
+                blocked += 1
                 continue
-            if result.get("ok"):
-                accessible.append(alias)
+            except Exception:
+                blocked += 1
+                continue
+            if not entity:
+                blocked += 1
+                continue
+            access = await verify_access(client, entity)
+            if access.get("ok"):
+                accessible += 1
             else:
-                blocked.append(f"{alias} reason={result.get('reason')}")
+                blocked += 1
         logger.info(
-            "TARGET CHECK DONE: total=%s accessible=%s blocked=%s",
+            "TARGET CHECK DONE: total=%s in_dialogs=%s accessible=%s blocked=%s",
             len(clients),
-            len(accessible),
-            len(blocked),
+            in_dialogs,
+            accessible,
+            blocked,
         )
     finally:
         for record in clients:

@@ -6,6 +6,7 @@ from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH
 from database import db
 from resolver import ensure_target_ready
+from sessions import warmup_dialogs
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,8 @@ class MassReporter:
     
     @staticmethod
     async def _ensure_peer(client: Client, target_chat):
-        result = await ensure_target_ready(client, target_chat)
+        alias = getattr(client, "alias", getattr(client, "name", "unknown"))
+        result = await ensure_target_ready(client, alias, target_chat)
         if not result.get("ok"):
             raise ValueError(f"Unable to resolve target {target_chat}: {result.get('reason')}")
         return result["entity"]
@@ -162,6 +164,15 @@ class MassReporter:
                     no_updates=True
                 )
                 await client.start()
+                client.alias = session["session_name"]
+                try:
+                    await warmup_dialogs(client, session["session_name"])
+                except Exception as error:
+                    logger.warning(
+                        "Warmup failed: alias=%s error=%s",
+                        session["session_name"],
+                        str(error)[:120],
+                    )
                 self._attach_report_helpers(client)
                 self.active_clients.append({
                     "client": client,

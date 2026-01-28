@@ -10,6 +10,7 @@ def normalize_target(raw: str | int) -> dict[str, Any]:
             "raw_input": raw_input,
             "kind": "id",
             "normalized_value": int(raw),
+            "normalized_key": f"id:{int(raw)}",
         }
 
     cleaned = str(raw).strip()
@@ -26,6 +27,7 @@ def normalize_target(raw: str | int) -> dict[str, Any]:
             "raw_input": raw_input,
             "kind": "username",
             "normalized_value": username,
+            "normalized_key": f"username:{username}",
         }
 
     link_fragment = None
@@ -41,12 +43,14 @@ def normalize_target(raw: str | int) -> dict[str, Any]:
                 "raw_input": raw_input,
                 "kind": "invite_link",
                 "normalized_value": normalized_link,
+                "normalized_key": f"invite_link:{normalized_link}",
             }
         username = link_fragment.split("/", 1)[0].lstrip("@").strip()
         return {
             "raw_input": raw_input,
             "kind": "public_link",
             "normalized_value": username,
+            "normalized_key": f"public_link:{username}",
         }
 
     trimmed = cleaned.strip()
@@ -55,10 +59,13 @@ def normalize_target(raw: str | int) -> dict[str, Any]:
             "raw_input": raw_input,
             "kind": "id",
             "normalized_value": int(trimmed),
+            "normalized_key": f"id:{int(trimmed)}",
         }
 
+    normalized_username = trimmed.lstrip("@").strip()
     return {
         "raw_input": raw_input,
         "kind": "username",
-        "normalized_value": trimmed.lstrip("@").strip(),
+        "normalized_value": normalized_username,
+        "normalized_key": f"username:{normalized_username}",
     }
